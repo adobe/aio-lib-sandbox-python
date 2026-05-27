@@ -1,7 +1,10 @@
 # App Builder Sandbox SDK (Python)
 
 [![PyPI](https://img.shields.io/pypi/v/aio-lib-sandbox.svg)](https://pypi.org/project/aio-lib-sandbox/)
+[![Downloads/week](https://img.shields.io/pypi/dw/aio-lib-sandbox.svg)](https://pypi.org/project/aio-lib-sandbox/)
+![Python CI](https://github.com/adobe/aio-lib-sandbox-python/workflows/Python%20CI/badge.svg)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Codecov Coverage](https://img.shields.io/codecov/c/github/adobe/aio-lib-sandbox-python/main.svg?style=flat-square)](https://codecov.io/gh/adobe/aio-lib-sandbox-python/)
 ![Status](https://img.shields.io/badge/status-alpha-orange.svg)
 
 Python SDK for Adobe Runtime Sandboxes.
