@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aio-lib-sandbox"
-version = "0.1.0a0"
+dynamic = ["version"]
 description = "Python SDK for Adobe Runtime Sandboxes"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,9 @@ dependencies = [
     "httpx>=0.27",
     "websockets>=13",
 ]
+
+[tool.hatch.version]
+path = "src/aio_lib_sandbox/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aio_lib_sandbox"]
