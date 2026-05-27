@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -72,7 +70,6 @@ def _inject_ws(sandbox: Sandbox):
 
 def _frame(ws, payload: dict) -> None:
     """Queue a JSON frame to be yielded by ws.__aiter__."""
-    encoded = json.dumps(payload)
     # we patch the listener separately; for direct frame handling tests,
     # call handle_exec_frame / handle_file_frame directly.
 
@@ -290,8 +287,6 @@ class TestSandboxGet:
 
     @pytest.mark.asyncio
     async def test_get_not_found_raises(self):
-        from aio_lib_sandbox.http import sandbox_http_error
-
         with patch(
             "aio_lib_sandbox.sandbox.api_request",
             new=AsyncMock(side_effect=SandboxNotFoundError("not found")),
@@ -328,7 +323,7 @@ class TestExec:
     @pytest.mark.asyncio
     async def test_exec_resolves_with_result(self):
         sandbox = _make_sandbox()
-        ws = _inject_ws(sandbox)
+        _inject_ws(sandbox)
 
         task = sandbox.exec("echo hello")
         exec_id = task.exec_id
@@ -434,15 +429,6 @@ class TestFileOps:
     async def test_read_file_base64_content(self):
         sandbox = _make_sandbox()
         _inject_ws(sandbox)
-
-        encoded = base64.b64encode(b"console.log('hi')").decode()
-
-        async def _run():
-            return await asyncio.get_running_loop().run_in_executor(None, lambda: None)
-
-        # trigger file op then inject response
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[str] = loop.create_future()
 
         with patch.object(sandbox, "file_op", new=AsyncMock(return_value="console.log('hi')")):
             result = await sandbox.read_file("/app/hello.js")
