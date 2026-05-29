@@ -73,6 +73,7 @@ sandbox = await Sandbox.create(
     name="my-sandbox",
     type="cpu:default",
     max_lifetime=3600,
+    ports=[3000, 8080],
     envs={"API_KEY": "your-api-key"},
 )
 ```
@@ -149,10 +150,19 @@ await sandbox.destroy()
 
 ### Preview URLs
 
-Use preview URLs to get access to servers or web services running in a sandbox on a particular port: 
+Ports that should be publicly accessible must be declared at creation time via the `ports` list.
 
 ```python
-url = await sandbox.get_url(port=3000)
+sandbox = await Sandbox.create(
+    name="web-sandbox",
+    ports=[3000, 8080],
+)
+
+# Start a server inside the sandbox on the declared port
+await sandbox.exec("python -m http.server 3000 &", timeout=5_000)
+
+# Retrieve the pre-provisioned preview URL — synchronous, no network call
+url = sandbox.get_url(3000)
 print("preview:", url)
 # https://sb-abc123-va6-0-xK3mPq2nAeB-3000.sandbox-adobeioruntime.net
 ```

@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
-import re
 import secrets
 from typing import Any, Callable
 
@@ -24,6 +23,7 @@ from .ws import PendingExec, PendingFileOp, WsSession
 from .errors import (
     SandboxClientError,
     SandboxInitializationError,
+    SandboxPortNotProvisionedError,
     SandboxWebSocketError,
 )
 from .types import (
@@ -57,7 +57,7 @@ class Sandbox:
         api_host: str,
         api_key: str,
         token: str | None = None,
-        public_url_template: str | None = None,
+        preview_urls: dict[int, str] | None = None,
         management_endpoint: str | None = None,
         verify_ssl: bool = True,
     ) -> None:
@@ -72,7 +72,7 @@ class Sandbox:
         self.api_host = api_host
         self.api_key = api_key
         self.token = token
-        self.public_url_template = public_url_template
+        self.preview_urls: dict[int, str] = preview_urls or {}
         self.management_endpoint = management_endpoint
         self.verify_ssl = verify_ssl
 
@@ -93,6 +93,7 @@ class Sandbox:
         type: str = "cpu:default",
         size: str | dict[str, Any] | None = None,
         max_lifetime: int = 3600,
+        ports: list[int] | None = None,
         envs: dict[str, str] | None = None,
         policy: Policy | None = None,
         cluster: str | None = None,
@@ -118,6 +119,7 @@ class Sandbox:
             type: Sandbox type (default: ``'cpu:default'``).
             size: Size tier name or spec dict.
             max_lifetime: Maximum lifetime in seconds.
+            ports: TCP ports to expose via preview URLs (default: ``[]``).
             envs: Environment variables to inject into the sandbox.
             policy: Network policy (e.g. egress allowlist).
             cluster: Target cluster name.
@@ -144,6 +146,8 @@ class Sandbox:
             body["envs"] = envs
         if policy is not None:
             body["policy"] = policy
+        if ports is not None:
+            body["ports"] = ports
 
         url = f"{creds['api_host']}/api/v1/namespaces/{creds['namespace']}/sandbox"
         payload = await api_request(
@@ -168,7 +172,7 @@ class Sandbox:
             cluster=payload.get("cluster"),
             region=payload.get("region"),
             max_lifetime=payload.get("maxLifetime", 3600),
-            public_url_template=payload.get("publicUrlTemplate"),
+            preview_urls=_parse_preview_urls(payload.get("previewUrls")),
             management_endpoint=payload.get("managementEndpoint"),
             namespace=creds["namespace"],
             api_host=creds["api_host"],
@@ -222,6 +226,7 @@ class Sandbox:
             cluster=payload.get("cluster"),
             region=payload.get("region"),
             max_lifetime=payload.get("maxLifetime", 3600),
+            preview_urls=_parse_preview_urls(payload.get("previewUrls")),
             namespace=creds["namespace"],
             api_host=creds["api_host"],
             api_key=creds["api_key"],
@@ -369,31 +374,34 @@ class Sandbox:
     # URL
     # ------------------------------------------------------------------
 
-    async def get_url(self, *, port: int, protocol: str | None = None) -> str:
+    def get_url(self, *, port: int) -> str:
         """Return the public preview URL for a given port on this sandbox.
+
+        This is a synchronous local lookup against the ``preview_urls`` dict
+        returned by the server at create time. The URL is opaque — do not
+        parse or reconstruct it.
 
         Args:
             port: Port number (1–65535).
-            protocol: Optional scheme override (e.g. ``'wss'``).
 
         Returns:
             The resolved preview URL string.
-        """
-        if not self.public_url_template:
-            raise SandboxClientError(
-                f"Cannot get URL for sandbox '{self.id}': public_url_template is not available"
-            )
 
+        Raises:
+            SandboxPortNotProvisionedError: When ``port`` was not declared in
+                ``create(ports=[...])``.
+        """
         if not isinstance(port, int) or port < 1 or port > 65535:
-            raise SandboxClientError(
+            raise SandboxPortNotProvisionedError(
                 f"Invalid port '{port}': must be an integer between 1 and 65535"
             )
 
-        url = self.public_url_template.replace("{sandboxId}", self.id).replace(
-            "{port}", str(port)
-        )
-        if protocol:
-            url = re.sub(r"^https?://", f"{protocol}://", url)
+        url = self.preview_urls.get(port)
+        if url is None:
+            raise SandboxPortNotProvisionedError(
+                f"Port {port} was not provisioned for sandbox '{self.id}'. "
+                "Declare it in create(ports=[...]) to get a preview URL."
+            )
         return url
 
     # ------------------------------------------------------------------
@@ -483,3 +491,26 @@ class Sandbox:
             "namespace": resolved_ns,  # type: ignore[return-value]
             "api_key": resolved_key,  # type: ignore[return-value]
         }
+
+
+def _parse_preview_urls(raw: Any) -> dict[int, str]:
+    """Parse the ``previewUrls`` JSON object from the API response.
+
+    Converts string keys (port numbers) to integers and treats URL values as
+    opaque strings — they are not parsed or reconstructed.
+
+    Returns an empty dict when the server response omits ``previewUrls``
+    (fail-closed: every ``get_url()`` call raises
+    :exc:`SandboxPortNotProvisionedError`).
+    """
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[int, str] = {}
+    for key, value in raw.items():
+        try:
+            port = int(key)
+        except (ValueError, TypeError):
+            continue
+        if 1 <= port <= 65535 and isinstance(value, str):
+            result[port] = value
+    return result
