@@ -19,12 +19,15 @@ from aio_lib_sandbox import (
 from aio_lib_sandbox.errors import (
     SandboxClientError,
     SandboxInitializationError,
+    SandboxInvalidPortError,
     SandboxNotFoundError,
+    SandboxPortNotProvisionedError,
     SandboxTimeoutError,
     SandboxUnauthorizedError,
     SandboxWebSocketError,
 )
 from aio_lib_sandbox.frames import normalize_size
+from aio_lib_sandbox.sandbox import _parse_preview_urls
 from aio_lib_sandbox.ws import PendingExec, PendingFileOp, WsSession
 
 # ---------------------------------------------------------------------------
@@ -255,6 +258,38 @@ class TestSandboxCreate:
         assert sandbox.endpoint is not None
         assert "sb-noep" in sandbox.endpoint
         assert sandbox.endpoint.startswith("wss://")
+
+    @pytest.mark.asyncio
+    async def test_create_forwards_ports_and_parses_preview_urls(self):
+        payload = {
+            "sandboxId": "sb-ports",
+            "wsEndpoint": "wss://runtime.example.net/ws/v1/namespaces/ns/sandbox/sb-ports/exec",
+            "status": "ready",
+            "token": "tok-ports",
+            "maxLifetime": 3600,
+            "previewUrls": {
+                "3000": "https://sb-ports-3000.preview.example.net",
+                "8080": "https://sb-ports-8080.preview.example.net",
+            },
+        }
+
+        with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req, \
+             patch.object(Sandbox, "connect", new=AsyncMock()):
+            sandbox = await Sandbox.create(
+                name="ports-sandbox",
+                api_host="https://runtime.example.net",
+                namespace="ns",
+                auth="uuid:key",
+                ports=[3000, 8080],
+            )
+
+        _, kwargs = mock_req.call_args
+        assert kwargs["body"]["ports"] == [3000, 8080]
+        assert sandbox.preview_urls == {
+            3000: "https://sb-ports-3000.preview.example.net",
+            8080: "https://sb-ports-8080.preview.example.net",
+        }
+        assert sandbox.get_url(3000) == "https://sb-ports-3000.preview.example.net"
 
 
 # ---------------------------------------------------------------------------
@@ -535,31 +570,29 @@ class TestFileOps:
 
 
 class TestGetUrl:
-    @pytest.mark.asyncio
-    async def test_resolves_url_from_template(self):
-        sandbox = _make_sandbox(public_url_template="https://{sandboxId}-{port}.preview.example.net")
-        url = await sandbox.get_url(port=3000)
+    def test_resolves_url_from_preview_urls(self):
+        sandbox = _make_sandbox(preview_urls={3000: "https://sb-test-3000.preview.example.net"})
+        url = sandbox.get_url(3000)
         assert url == "https://sb-test-3000.preview.example.net"
 
-    @pytest.mark.asyncio
-    async def test_overrides_protocol(self):
-        sandbox = _make_sandbox(public_url_template="https://{sandboxId}-{port}.preview.example.net")
-        url = await sandbox.get_url(port=3000, protocol="wss")
-        assert url == "wss://sb-test-3000.preview.example.net"
-
-    @pytest.mark.asyncio
-    async def test_raises_without_template(self):
+    def test_raises_when_port_not_provisioned(self):
         sandbox = _make_sandbox()
-        with pytest.raises(SandboxClientError):
-            await sandbox.get_url(port=3000)
+        with pytest.raises(SandboxPortNotProvisionedError):
+            sandbox.get_url(3000)
 
-    @pytest.mark.asyncio
-    async def test_raises_on_invalid_port(self):
-        sandbox = _make_sandbox(public_url_template="https://{sandboxId}-{port}.preview.example.net")
-        with pytest.raises(SandboxClientError):
-            await sandbox.get_url(port=0)
-        with pytest.raises(SandboxClientError):
-            await sandbox.get_url(port=70000)
+    def test_raises_on_out_of_range_port(self):
+        sandbox = _make_sandbox(preview_urls={3000: "https://sb-test-3000.preview.example.net"})
+        with pytest.raises(SandboxInvalidPortError):
+            sandbox.get_url(0)
+        with pytest.raises(SandboxInvalidPortError):
+            sandbox.get_url(65536)
+
+    def test_raises_on_non_integer_port(self):
+        sandbox = _make_sandbox(preview_urls={3000: "https://sb-test-3000.preview.example.net"})
+        with pytest.raises(SandboxInvalidPortError):
+            sandbox.get_url("3000")
+        with pytest.raises(SandboxInvalidPortError):
+            sandbox.get_url(3000.5)
 
 
 # ---------------------------------------------------------------------------
@@ -703,3 +736,43 @@ class TestBuildCreateBodyPolicy:
             )
 
         assert "policy" not in captured["body"]
+
+
+# ---------------------------------------------------------------------------
+# _parse_preview_urls
+# ---------------------------------------------------------------------------
+
+
+class TestParsePreviewUrls:
+    def test_returns_empty_for_non_dict(self):
+        assert _parse_preview_urls(None) == {}
+        assert _parse_preview_urls("string") == {}
+        assert _parse_preview_urls(42) == {}
+        assert _parse_preview_urls([]) == {}
+
+    def test_parses_string_keys_to_int(self):
+        raw = {"3000": "https://sb-3000.example.net", "8080": "https://sb-8080.example.net"}
+        result = _parse_preview_urls(raw)
+        assert result == {
+            3000: "https://sb-3000.example.net",
+            8080: "https://sb-8080.example.net",
+        }
+
+    def test_skips_non_integer_keys(self):
+        raw = {"3000": "https://sb-3000.example.net", "notaport": "https://sb-x.example.net"}
+        result = _parse_preview_urls(raw)
+        assert result == {3000: "https://sb-3000.example.net"}
+
+    def test_skips_out_of_range_ports(self):
+        raw = {"0": "https://zero.example.net", "65536": "https://toobig.example.net",
+               "3000": "https://sb-3000.example.net"}
+        result = _parse_preview_urls(raw)
+        assert result == {3000: "https://sb-3000.example.net"}
+
+    def test_skips_non_string_url_values(self):
+        raw = {"3000": 12345, "8080": "https://sb-8080.example.net"}
+        result = _parse_preview_urls(raw)
+        assert result == {8080: "https://sb-8080.example.net"}
+
+    def test_returns_empty_for_empty_dict(self):
+        assert _parse_preview_urls({}) == {}
