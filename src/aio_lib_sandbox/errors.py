@@ -36,3 +36,7 @@ class SandboxWebSocketError(SandboxSDKError):
 
 class SandboxPortNotProvisionedError(SandboxClientError):
     """Port was not declared in ``create(ports=[...])`` and cannot be retrieved."""
+
+
+class SandboxInvalidPortError(SandboxClientError):
+    """Port value is not a valid integer in the range 1–65535."""

@@ -10,6 +10,7 @@ __version__ = "0.1.0a1"
 from .errors import (
     SandboxClientError,
     SandboxInitializationError,
+    SandboxInvalidPortError,
     SandboxNotFoundError,
     SandboxPortNotProvisionedError,
     SandboxSDKError,
@@ -44,6 +45,7 @@ __all__ = [
     "SandboxSDKError",
     "SandboxInitializationError",
     "SandboxClientError",
+    "SandboxInvalidPortError",
     "SandboxNotFoundError",
     "SandboxPortNotProvisionedError",
     "SandboxUnauthorizedError",

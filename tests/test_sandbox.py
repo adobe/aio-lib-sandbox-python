@@ -19,7 +19,9 @@ from aio_lib_sandbox import (
 from aio_lib_sandbox.errors import (
     SandboxClientError,
     SandboxInitializationError,
+    SandboxInvalidPortError,
     SandboxNotFoundError,
+    SandboxPortNotProvisionedError,
     SandboxTimeoutError,
     SandboxUnauthorizedError,
     SandboxWebSocketError,
@@ -575,15 +577,22 @@ class TestGetUrl:
 
     def test_raises_when_port_not_provisioned(self):
         sandbox = _make_sandbox()
-        with pytest.raises(SandboxClientError):
+        with pytest.raises(SandboxPortNotProvisionedError):
             sandbox.get_url(3000)
 
-    def test_raises_on_invalid_port(self):
+    def test_raises_on_out_of_range_port(self):
         sandbox = _make_sandbox(preview_urls={3000: "https://sb-test-3000.preview.example.net"})
-        with pytest.raises(SandboxClientError):
+        with pytest.raises(SandboxInvalidPortError):
             sandbox.get_url(0)
-        with pytest.raises(SandboxClientError):
-            sandbox.get_url(70000)
+        with pytest.raises(SandboxInvalidPortError):
+            sandbox.get_url(65536)
+
+    def test_raises_on_non_integer_port(self):
+        sandbox = _make_sandbox(preview_urls={3000: "https://sb-test-3000.preview.example.net"})
+        with pytest.raises(SandboxInvalidPortError):
+            sandbox.get_url("3000")
+        with pytest.raises(SandboxInvalidPortError):
+            sandbox.get_url(3000.5)
 
 
 # ---------------------------------------------------------------------------

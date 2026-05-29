@@ -23,6 +23,7 @@ from .ws import PendingExec, PendingFileOp, WsSession
 from .errors import (
     SandboxClientError,
     SandboxInitializationError,
+    SandboxInvalidPortError,
     SandboxPortNotProvisionedError,
     SandboxWebSocketError,
 )
@@ -388,11 +389,13 @@ class Sandbox:
             The preview URL string for that port.
 
         Raises:
-            SandboxPortNotProvisionedError: When ``port`` is invalid or was
-                not declared in ``create(ports=[...])``.
+            SandboxInvalidPortError: When ``port`` is not an integer in the
+                range 1–65535.
+            SandboxPortNotProvisionedError: When ``port`` is valid but was not
+                declared in ``create(ports=[...])``.
         """
         if not isinstance(port, int) or port < 1 or port > 65535:
-            raise SandboxPortNotProvisionedError(
+            raise SandboxInvalidPortError(
                 f"Invalid port '{port}': must be an integer between 1 and 65535"
             )
 
