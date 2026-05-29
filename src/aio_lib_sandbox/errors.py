@@ -34,5 +34,5 @@ class SandboxWebSocketError(SandboxSDKError):
     """WebSocket transport error."""
 
 
-class SandboxPortNotProvisionedError(SandboxSDKError):
+class SandboxPortNotProvisionedError(SandboxClientError):
     """Port was not declared in ``create(ports=[...])`` and cannot be retrieved."""

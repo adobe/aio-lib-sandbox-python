@@ -535,31 +535,22 @@ class TestFileOps:
 
 
 class TestGetUrl:
-    @pytest.mark.asyncio
-    async def test_resolves_url_from_template(self):
-        sandbox = _make_sandbox(public_url_template="https://{sandboxId}-{port}.preview.example.net")
-        url = await sandbox.get_url(port=3000)
+    def test_resolves_url_from_preview_urls(self):
+        sandbox = _make_sandbox(preview_urls={3000: "https://sb-test-3000.preview.example.net"})
+        url = sandbox.get_url(3000)
         assert url == "https://sb-test-3000.preview.example.net"
 
-    @pytest.mark.asyncio
-    async def test_overrides_protocol(self):
-        sandbox = _make_sandbox(public_url_template="https://{sandboxId}-{port}.preview.example.net")
-        url = await sandbox.get_url(port=3000, protocol="wss")
-        assert url == "wss://sb-test-3000.preview.example.net"
-
-    @pytest.mark.asyncio
-    async def test_raises_without_template(self):
+    def test_raises_when_port_not_provisioned(self):
         sandbox = _make_sandbox()
         with pytest.raises(SandboxClientError):
-            await sandbox.get_url(port=3000)
+            sandbox.get_url(3000)
 
-    @pytest.mark.asyncio
-    async def test_raises_on_invalid_port(self):
-        sandbox = _make_sandbox(public_url_template="https://{sandboxId}-{port}.preview.example.net")
+    def test_raises_on_invalid_port(self):
+        sandbox = _make_sandbox(preview_urls={3000: "https://sb-test-3000.preview.example.net"})
         with pytest.raises(SandboxClientError):
-            await sandbox.get_url(port=0)
+            sandbox.get_url(0)
         with pytest.raises(SandboxClientError):
-            await sandbox.get_url(port=70000)
+            sandbox.get_url(70000)
 
 
 # ---------------------------------------------------------------------------

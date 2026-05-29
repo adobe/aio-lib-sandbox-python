@@ -374,22 +374,22 @@ class Sandbox:
     # URL
     # ------------------------------------------------------------------
 
-    def get_url(self, *, port: int) -> str:
+    def get_url(self, port: int) -> str:
         """Return the public preview URL for a given port on this sandbox.
 
-        This is a synchronous local lookup against the ``preview_urls`` dict
-        returned by the server at create time. The URL is opaque — do not
-        parse or reconstruct it.
+        Synchronous local lookup against the ``preview_urls`` dict returned by
+        the server at create time. The URL is opaque — do not parse or
+        reconstruct it.
 
         Args:
-            port: Port number (1–65535).
+            port: Port number (1–65535) declared in ``create(ports=[...])``.
 
         Returns:
-            The resolved preview URL string.
+            The preview URL string for that port.
 
         Raises:
-            SandboxPortNotProvisionedError: When ``port`` was not declared in
-                ``create(ports=[...])``.
+            SandboxPortNotProvisionedError: When ``port`` is invalid or was
+                not declared in ``create(ports=[...])``.
         """
         if not isinstance(port, int) or port < 1 or port > 65535:
             raise SandboxPortNotProvisionedError(
