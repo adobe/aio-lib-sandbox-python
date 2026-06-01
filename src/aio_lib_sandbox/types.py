@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Generator
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Union
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 if TYPE_CHECKING:
     pass

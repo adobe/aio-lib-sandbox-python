@@ -29,7 +29,7 @@ from aio_lib_sandbox.errors import (
     SandboxWebSocketError,
 )
 from aio_lib_sandbox.frames import normalize_size
-from aio_lib_sandbox.ws import PendingExec, PendingFileOp, PendingGetOp, WsSession
+from aio_lib_sandbox.ws import PendingExec, PendingFileOp, WsSession
 from aio_lib_sandbox.sandbox import _parse_preview_urls
 
 # ---------------------------------------------------------------------------
