@@ -604,6 +604,62 @@ class TestDestroy:
         ws.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_destroy_resolves_pending_foreground_exec(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {"status": "destroyed"}
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.delete = AsyncMock(return_value=mock_resp)
+
+        task = sandbox.exec("sleep 100")
+        await asyncio.sleep(0)
+
+        with patch("aio_lib_sandbox.sandbox.httpx.AsyncClient", return_value=mock_client):
+            await sandbox.destroy()
+
+        result = await task
+        assert result == ExecResult(
+            exec_id=task.exec_id,
+            stdout="",
+            stderr="",
+            exit_code=None,
+            destroyed=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_destroy_resolves_detached_wait(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {"status": "destroyed"}
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.delete = AsyncMock(return_value=mock_resp)
+
+        task = sandbox.exec("sleep infinity", detached=True)
+        await asyncio.sleep(0)
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": task.exec_id, "pid": 1234, "startedAt": 100}
+        )
+        handle = await task
+        wait_task = asyncio.create_task(handle.wait())
+
+        with patch("aio_lib_sandbox.sandbox.httpx.AsyncClient", return_value=mock_client):
+            await sandbox.destroy()
+
+        assert await wait_task == {"exit_code": None, "destroyed": True}
+
+    @pytest.mark.asyncio
     async def test_destroy_raises_on_401(self):
         sandbox = _make_sandbox()
         _inject_ws(sandbox)

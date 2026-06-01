@@ -480,19 +480,26 @@ class Sandbox:
         base = self.management_endpoint or self.api_host
         url = f"{base}/api/v1/namespaces/{self.namespace}/sandbox/{self.id}"
         headers = {"Authorization": build_auth_header(self.api_key)}
+        if self.session:
+            self.session.begin_intentional_close()
 
-        async with httpx.AsyncClient(verify=self.verify_ssl) as client:
-            try:
-                resp = await client.delete(url, headers=headers)
-            except httpx.HTTPError as exc:
-                raise SandboxClientError(
-                    f"Could not destroy sandbox '{self.id}': {exc}"
-                ) from exc
+        try:
+            async with httpx.AsyncClient(verify=self.verify_ssl) as client:
+                try:
+                    resp = await client.delete(url, headers=headers)
+                except httpx.HTTPError as exc:
+                    raise SandboxClientError(
+                        f"Could not destroy sandbox '{self.id}': {exc}"
+                    ) from exc
 
-        if not resp.is_success:
-            msg = resp.text
-            detail = f"Could not destroy sandbox '{self.id}': {resp.status_code}{f' {msg}' if msg else ''}"
-            raise sandbox_http_error(resp.status_code, detail)
+            if not resp.is_success:
+                msg = resp.text
+                detail = f"Could not destroy sandbox '{self.id}': {resp.status_code}{f' {msg}' if msg else ''}"
+                raise sandbox_http_error(resp.status_code, detail)
+        except Exception:
+            if self.session:
+                self.session.cancel_intentional_close()
+            raise
 
         payload = resp.json()
         self.status = payload.get("status", self.status)

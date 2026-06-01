@@ -94,6 +94,7 @@ class WsSession:
         self.pending_file_ops: dict[str, PendingFileOp] = {}
         self.pending_get_ops: dict[str, PendingGetOp] = {}
         self.listener_task: asyncio.Task[None] | None = None
+        self.intentional_close = False
 
     # ------------------------------------------------------------------
     # Connection
@@ -146,14 +147,28 @@ class WsSession:
         if self.ws is None:
             raise SandboxWebSocketError(f"Sandbox '{self.id}' is not connected")
 
-    async def close(self) -> None:
+    def begin_intentional_close(self) -> None:
+        """Mark the next WebSocket close as expected by sandbox teardown."""
+        self.intentional_close = True
+
+    def cancel_intentional_close(self) -> None:
+        """Clear a previously requested intentional close."""
+        self.intentional_close = False
+
+    async def close(self, *, intentional: bool = False) -> None:
         """Cancel the listener task and close the socket."""
+        if intentional:
+            self.begin_intentional_close()
+        if self.intentional_close:
+            self.resolve_all_on_intentional_close()
         if self.listener_task:
             self.listener_task.cancel()
             self.listener_task = None
         if self.ws:
             await self.ws.close()
             self.ws = None
+        if self.intentional_close:
+            self.intentional_close = False
 
     # ------------------------------------------------------------------
     # Pending operation management
@@ -204,6 +219,49 @@ class WsSession:
             if pending and not pending.future.done():
                 pending.future.set_exception(error)
 
+    def resolve_exec_on_intentional_close(self, exec_id: str) -> None:
+        """Resolve a pending exec during an intentional sandbox shutdown."""
+        pending = self.pending_execs.pop(exec_id, None)
+        if pending is None:
+            return
+        if pending.timeout_handle:
+            pending.timeout_handle.cancel()
+
+        wait_result = {"exit_code": None, "destroyed": True}
+        if pending.detached:
+            if not pending.future.done():
+                pending.resolved = True
+                pending.future.set_result(
+                    {"pid": None, "started_at": None, "destroyed": True}
+                )
+            if pending.wait_future and not pending.wait_future.done():
+                pending.wait_future.set_result(wait_result)
+            return
+
+        if not pending.future.done():
+            pending.future.set_result(
+                ExecResult(
+                    exec_id=exec_id,
+                    stdout=pending.stdout,
+                    stderr=pending.stderr,
+                    exit_code=None,
+                    destroyed=True,
+                )
+            )
+
+    def resolve_all_on_intentional_close(self) -> None:
+        """Drain tracked operations without errors during sandbox destroy."""
+        for eid in list(self.pending_execs):
+            self.resolve_exec_on_intentional_close(eid)
+        for eid in list(self.pending_file_ops):
+            pending = self.pending_file_ops.pop(eid, None)
+            if pending and not pending.future.done():
+                pending.future.set_result(None)
+        for eid in list(self.pending_get_ops):
+            pending = self.pending_get_ops.pop(eid, None)
+            if pending and not pending.future.done():
+                pending.future.set_result(None)
+
     async def wait_for_exec_start(self, exec_id: str) -> None:
         pending = self.pending_execs.get(exec_id)
         if pending is not None and not pending.started.is_set():
@@ -248,6 +306,9 @@ class WsSession:
                 elif exec_id in self.pending_execs:
                     self.handle_exec_frame(frame)
         except websockets.ConnectionClosed as exc:
+            if self.intentional_close:
+                self.resolve_all_on_intentional_close()
+                return
             self.reject_all(
                 SandboxWebSocketError(
                     f"Sandbox '{self.id}' WebSocket closed with code {exc.code}"
@@ -255,6 +316,8 @@ class WsSession:
             )
         finally:
             self.ws = None
+            if self.intentional_close:
+                self.intentional_close = False
 
     # ------------------------------------------------------------------
     # Frame handlers

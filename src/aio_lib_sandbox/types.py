@@ -35,7 +35,8 @@ class ExecResult:
     exec_id: str
     stdout: str
     stderr: str
-    exit_code: int
+    exit_code: int | None
+    destroyed: bool = False
 
 
 @dataclass
