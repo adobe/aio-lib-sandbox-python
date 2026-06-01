@@ -309,9 +309,10 @@ class WsSession:
             if self.intentional_close:
                 self.resolve_all_on_intentional_close()
                 return
+            close_code = exc.rcvd.code if exc.rcvd is not None else 1006
             self.reject_all(
                 SandboxWebSocketError(
-                    f"Sandbox '{self.id}' WebSocket closed with code {exc.code}"
+                    f"Sandbox '{self.id}' WebSocket closed with code {close_code}"
                 )
             )
         finally:

@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+import websockets
 
 from aio_lib_sandbox import (
     SANDBOX_SIZES,
@@ -78,6 +80,22 @@ def _frame(ws, payload: dict) -> None:
     """Queue a JSON frame to be yielded by ws.__aiter__."""
     # we patch the listener separately; for direct frame handling tests,
     # call handle_exec_frame / handle_file_frame directly.
+
+
+class _AsyncFrameStream:
+    def __init__(self, *frames):
+        self.frames = list(frames)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.frames:
+            raise StopAsyncIteration
+        frame = self.frames.pop(0)
+        if isinstance(frame, BaseException):
+            raise frame
+        return frame
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +378,114 @@ class TestWebSocketConnection:
             with pytest.raises(SandboxWebSocketError, match="Could not connect sandbox"):
                 await session.connect()
 
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_non_ack_frame(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        session.ws = AsyncMock()
+        session.ws.recv = AsyncMock(return_value=json.dumps({"type": "auth.error"}))
+
+        with pytest.raises(SandboxUnauthorizedError, match="rejected"):
+            await session.authenticate()
+
+        session.ws.send.assert_awaited_once_with(
+            json.dumps({"type": "auth", "token": "tok-abc"})
+        )
+
+    def test_ensure_open_raises_when_socket_missing(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+
+        with pytest.raises(SandboxWebSocketError, match="is not connected"):
+            session.ensure_open()
+
+    @pytest.mark.asyncio
+    async def test_listen_routes_frames_and_clears_socket(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        session.ws = _AsyncFrameStream(
+            "not-json",
+            json.dumps({"type": "auth.ok", "sandboxId": "sb-test"}),
+            json.dumps({"type": "exec.info", "execId": "get-1"}),
+            json.dumps({"type": "file.content", "execId": "file-1"}),
+            json.dumps({"type": "exec.output", "execId": "exec-1"}),
+        )
+        session.pending_get_ops["get-1"] = PendingGetOp(
+            future=asyncio.get_running_loop().create_future()
+        )
+        session.pending_file_ops["file-1"] = PendingFileOp(
+            future=asyncio.get_running_loop().create_future()
+        )
+        session.pending_execs["exec-1"] = PendingExec(
+            future=asyncio.get_running_loop().create_future()
+        )
+        session.handle_get_frame = MagicMock()
+        session.handle_file_frame = MagicMock()
+        session.handle_exec_frame = MagicMock()
+
+        await session.listen()
+
+        session.handle_get_frame.assert_called_once_with(
+            {"type": "exec.info", "execId": "get-1"}
+        )
+        session.handle_file_frame.assert_called_once_with(
+            {"type": "file.content", "execId": "file-1"}
+        )
+        session.handle_exec_frame.assert_called_once_with(
+            {"type": "exec.output", "execId": "exec-1"}
+        )
+        assert session.ws is None
+
+    @pytest.mark.asyncio
+    async def test_listen_rejects_pending_on_unintentional_close(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        future = asyncio.get_running_loop().create_future()
+        session.pending_execs["exec-1"] = PendingExec(future=future)
+        session.ws = _AsyncFrameStream(websockets.ConnectionClosedError(None, None))
+
+        await session.listen()
+
+        with pytest.raises(SandboxWebSocketError, match="closed with code 1006"):
+            await future
+        assert session.ws is None
+
+    @pytest.mark.asyncio
+    async def test_listen_resolves_pending_on_intentional_close(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        future = asyncio.get_running_loop().create_future()
+        session.pending_execs["exec-1"] = PendingExec(future=future)
+        session.intentional_close = True
+        session.ws = _AsyncFrameStream(websockets.ConnectionClosedError(None, None))
+
+        await session.listen()
+
+        assert await future == ExecResult(
+            exec_id="exec-1",
+            stdout="",
+            stderr="",
+            exit_code=None,
+            destroyed=True,
+        )
+        assert session.ws is None
+        assert session.intentional_close is False
+
 
 # ---------------------------------------------------------------------------
 # Sandbox.get()
@@ -522,6 +648,14 @@ class TestExec:
         with pytest.raises(SandboxWebSocketError):
             sandbox.exec("cmd")
 
+    def test_handle_exec_frame_ignores_missing_pending_exec(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.output", "execId": "exec-missing", "data": "ignored"}
+        )
+
 
 # ---------------------------------------------------------------------------
 # File operations
@@ -631,6 +765,28 @@ class TestFileOps:
 
         result = await future
         assert result == []
+
+    def test_handle_file_frame_ignores_missing_pending_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.handle_file_frame(
+            {"type": "file.content", "execId": "file-missing", "content": "ignored"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_file_error_frame_rejects_pending_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        future = asyncio.get_running_loop().create_future()
+        sandbox.session.pending_file_ops["file-err"] = PendingFileOp(future=future)
+
+        sandbox.session.handle_file_frame(
+            {"type": "error", "execId": "file-err", "message": "read failed"}
+        )
+
+        with pytest.raises(SandboxClientError, match="read failed"):
+            await future
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +978,28 @@ class TestWebSocketClose:
 
         with pytest.raises(SandboxWebSocketError, match="closed"):
             await get_future
+
+    @pytest.mark.asyncio
+    async def test_register_file_op_tracks_pending_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        pending = PendingFileOp(future=asyncio.get_running_loop().create_future())
+
+        sandbox.session.register_file_op("file-1", pending)
+
+        assert sandbox.session.pending_file_ops["file-1"] is pending
+
+    def test_reject_pending_ignores_missing_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.reject_pending(
+            sandbox.session.pending_file_ops,
+            "file-missing",
+            SandboxWebSocketError("closed"),
+        )
+
+        assert sandbox.session.pending_file_ops == {}
 
     @pytest.mark.asyncio
     async def test_close_with_intentional_flag_resolves_pending_and_cancels_listener(self):
@@ -1333,6 +1511,14 @@ class TestGetCommand:
         pending.on_output("line\n", "stdout")
 
         assert chunks == [("line\n", "stdout")]
+
+    def test_handle_get_frame_ignores_missing_pending_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.handle_get_frame(
+            {"type": "exec.info", "execId": "exec-missing"}
+        )
 
 # ---------------------------------------------------------------------------
 # _parse_preview_urls
