@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Generator
-from dataclasses import dataclass
-from typing import Any, List, Union
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Union
+
+if TYPE_CHECKING:
+    pass
 
 
 # ------------------------------------------------------------------
@@ -69,6 +72,57 @@ class ExecTask:
 
     def __await__(self) -> Generator[Any, None, ExecResult]:
         return self._task.__await__()
+
+
+class DetachedCommandHandle:
+    """Handle for a detached background command.
+
+    Returned by ``await sandbox.exec(cmd, detached=True)`` once the process has
+    started.  Use :meth:`wait` to block until the process exits,
+    :meth:`write_stdin` / :meth:`close_stdin` to interact with stdin, and
+    :meth:`kill` to terminate it.
+
+    Do not instantiate directly — use :meth:`Sandbox.exec` with
+    ``detached=True`` or :meth:`Sandbox.get_command`.
+    """
+
+    def __init__(
+        self,
+        exec_id: str,
+        pid: int,
+        started_at: int,
+        detached: bool,
+        wait_future: asyncio.Future[Any],
+        sandbox_ref: Any,
+        command: Optional[str] = None,
+    ) -> None:
+        self.exec_id = exec_id
+        self.pid = pid
+        self.started_at = started_at
+        self.detached = detached
+        self.command = command
+        self._wait_future = wait_future
+        self._sandbox = sandbox_ref
+
+    async def wait(self) -> dict[str, Any]:
+        """Wait for the process to exit.
+
+        Returns:
+            ``{"exit_code": int}`` when the process terminates.
+        """
+        return await self._wait_future
+
+    async def write_stdin(self, data: Union[str, bytes]) -> None:
+        """Write data to the process stdin."""
+        await self._sandbox.write_stdin(self.exec_id, data)
+
+    async def close_stdin(self) -> None:
+        """Close stdin, sending EOF to the process."""
+        await self._sandbox.close_stdin(self.exec_id)
+
+    async def kill(self, signal: str = "SIGTERM") -> None:
+        """Send a signal to the process."""
+        await self._sandbox.kill(self.exec_id, signal)
 
 
 # ------------------------------------------------------------------

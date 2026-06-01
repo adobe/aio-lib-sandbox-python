@@ -11,6 +11,7 @@ import pytest
 
 from aio_lib_sandbox import (
     SANDBOX_SIZES,
+    DetachedCommandHandle,
     ExecResult,
     FileEntry,
     Sandbox,
@@ -18,6 +19,7 @@ from aio_lib_sandbox import (
 )
 from aio_lib_sandbox.errors import (
     SandboxClientError,
+    SandboxCommandNotFoundError,
     SandboxInitializationError,
     SandboxNotFoundError,
     SandboxTimeoutError,
@@ -25,7 +27,7 @@ from aio_lib_sandbox.errors import (
     SandboxWebSocketError,
 )
 from aio_lib_sandbox.frames import normalize_size
-from aio_lib_sandbox.ws import PendingExec, PendingFileOp, WsSession
+from aio_lib_sandbox.ws import PendingExec, PendingFileOp, PendingGetOp, WsSession
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -169,6 +171,9 @@ class TestSandboxCreate:
             "status": "ready",
             "token": "tok-new",
             "maxLifetime": 3600,
+            "previewUrls": {
+                "3000": "https://sb-new-3000.preview.example.net",
+            },
         }
 
         with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req, \
@@ -182,6 +187,9 @@ class TestSandboxCreate:
 
         assert sandbox.id == "sb-new"
         assert sandbox.status == "ready"
+        assert sandbox.preview_urls == {
+            "3000": "https://sb-new-3000.preview.example.net",
+        }
         mock_req.assert_called_once()
         mock_connect.assert_called_once()
 
@@ -536,26 +544,32 @@ class TestFileOps:
 
 class TestGetUrl:
     @pytest.mark.asyncio
-    async def test_resolves_url_from_template(self):
-        sandbox = _make_sandbox(public_url_template="https://{sandboxId}-{port}.preview.example.net")
+    async def test_resolves_url_from_preview_urls(self):
+        sandbox = _make_sandbox(
+            preview_urls={"3000": "https://sb-test-3000.preview.example.net"}
+        )
         url = await sandbox.get_url(port=3000)
         assert url == "https://sb-test-3000.preview.example.net"
 
     @pytest.mark.asyncio
     async def test_overrides_protocol(self):
-        sandbox = _make_sandbox(public_url_template="https://{sandboxId}-{port}.preview.example.net")
+        sandbox = _make_sandbox(
+            preview_urls={"3000": "https://sb-test-3000.preview.example.net"}
+        )
         url = await sandbox.get_url(port=3000, protocol="wss")
         assert url == "wss://sb-test-3000.preview.example.net"
 
     @pytest.mark.asyncio
-    async def test_raises_without_template(self):
+    async def test_raises_without_preview_url_for_port(self):
         sandbox = _make_sandbox()
         with pytest.raises(SandboxClientError):
             await sandbox.get_url(port=3000)
 
     @pytest.mark.asyncio
     async def test_raises_on_invalid_port(self):
-        sandbox = _make_sandbox(public_url_template="https://{sandboxId}-{port}.preview.example.net")
+        sandbox = _make_sandbox(
+            preview_urls={"3000": "https://sb-test-3000.preview.example.net"}
+        )
         with pytest.raises(SandboxClientError):
             await sandbox.get_url(port=0)
         with pytest.raises(SandboxClientError):
@@ -703,3 +717,193 @@ class TestBuildCreateBodyPolicy:
             )
 
         assert "policy" not in captured["body"]
+
+
+# ---------------------------------------------------------------------------
+# Detached exec
+# ---------------------------------------------------------------------------
+
+
+class TestDetachedExec:
+    @pytest.mark.asyncio
+    async def test_exec_detached_resolves_with_handle_on_exec_detached(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        task = sandbox.exec("npm run dev", detached=True)
+        exec_id = task.exec_id
+
+        await asyncio.sleep(0)
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": exec_id, "pid": 9999, "startedAt": 1234567890}
+        )
+
+        handle = await task
+        assert isinstance(handle, DetachedCommandHandle)
+        assert handle.exec_id == exec_id
+        assert handle.pid == 9999
+        assert handle.started_at == 1234567890
+        assert handle.detached is True
+
+    @pytest.mark.asyncio
+    async def test_exec_detached_wait_resolves_on_exec_exit(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        task = sandbox.exec("sleep 100", detached=True)
+        exec_id = task.exec_id
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": exec_id, "pid": 1234, "startedAt": 1000}
+        )
+
+        handle = await task
+
+        wait_coro = handle.wait()
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.exit", "execId": exec_id, "exitCode": 0}
+        )
+
+        result = await wait_coro
+        assert result["exit_code"] == 0
+
+    @pytest.mark.asyncio
+    async def test_exec_detached_output_frames_delivered_after_detached_ack(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        chunks = []
+        task = sandbox.exec("npm run dev", detached=True, on_output=lambda d, s: chunks.append((d, s)))
+        exec_id = task.exec_id
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": exec_id, "pid": 9000, "startedAt": 1}
+        )
+        await task
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.output", "execId": exec_id, "stream": "stdout", "data": "compiled\n"}
+        )
+        assert chunks == [("compiled\n", "stdout")]
+
+    @pytest.mark.asyncio
+    async def test_exec_detached_error_after_ack_rejects_wait(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        task = sandbox.exec("bad-cmd", detached=True)
+        exec_id = task.exec_id
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": exec_id, "pid": 1, "startedAt": 1}
+        )
+        handle = await task
+
+        wait_coro = handle.wait()
+        sandbox.session.handle_exec_frame(
+            {"type": "error", "execId": exec_id, "message": "process crashed"}
+        )
+
+        with pytest.raises(SandboxClientError, match="process crashed"):
+            await wait_coro
+
+    def test_exec_detached_with_timeout_raises(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        with pytest.raises(SandboxClientError, match="timeout"):
+            sandbox.exec("cmd", detached=True, timeout=1000)
+
+
+# ---------------------------------------------------------------------------
+# get_command
+# ---------------------------------------------------------------------------
+
+
+class TestGetCommand:
+    @pytest.mark.asyncio
+    async def test_get_command_resolves_with_handle_on_exec_info(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        loop = asyncio.get_event_loop()
+        coro = sandbox.get_command("exec-d1e2f3a4")
+        task = loop.create_task(coro)
+
+        await asyncio.sleep(0)
+
+        sandbox.session.handle_get_frame({
+            "type": "exec.info",
+            "execId": "exec-d1e2f3a4",
+            "command": "npm run dev",
+            "pid": 5678,
+            "startedAt": 1711036812,
+            "detached": True,
+        })
+
+        handle = await task
+        assert isinstance(handle, DetachedCommandHandle)
+        assert handle.exec_id == "exec-d1e2f3a4"
+        assert handle.command == "npm run dev"
+        assert handle.pid == 5678
+        assert handle.started_at == 1711036812
+
+    @pytest.mark.asyncio
+    async def test_get_command_wait_resolves_on_exec_exit(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        loop = asyncio.get_event_loop()
+        coro = sandbox.get_command("exec-reattach")
+        get_task = loop.create_task(coro)
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_get_frame({
+            "type": "exec.info",
+            "execId": "exec-reattach",
+            "command": "sleep 60",
+            "pid": 1111,
+            "startedAt": 100,
+            "detached": True,
+        })
+
+        handle = await get_task
+        wait_coro = handle.wait()
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.exit", "execId": "exec-reattach", "exitCode": 143}
+        )
+
+        result = await wait_coro
+        assert result["exit_code"] == 143
+
+    @pytest.mark.asyncio
+    async def test_get_command_raises_command_not_found_on_error(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        loop = asyncio.get_event_loop()
+        coro = sandbox.get_command("exec-gone")
+        get_task = loop.create_task(coro)
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_get_frame({
+            "type": "error",
+            "execId": "exec-gone",
+            "code": "NOT_FOUND",
+            "message": "no running process for execId",
+        })
+
+        with pytest.raises(SandboxCommandNotFoundError):
+            await get_task

@@ -22,11 +22,12 @@ import websockets
 from .frames import is_auth_ack, parse_frame
 from .errors import (
     SandboxClientError,
+    SandboxCommandNotFoundError,
     SandboxTimeoutError,
     SandboxUnauthorizedError,
     SandboxWebSocketError,
 )
-from .types import ExecResult, FileEntry, WriteResult
+from .types import DetachedCommandHandle, ExecResult, FileEntry, WriteResult
 
 logger = logging.getLogger("aio_lib_sandbox")
 
@@ -38,17 +39,30 @@ logger = logging.getLogger("aio_lib_sandbox")
 
 @dataclass
 class PendingExec:
-    future: asyncio.Future[ExecResult]
+    future: asyncio.Future[Any]
     started: asyncio.Event = field(default_factory=asyncio.Event)
     stdout: str = ""
     stderr: str = ""
     on_output: Callable[[str, str], None] | None = None
     timeout_handle: asyncio.TimerHandle | None = None
+    # Detached-process fields
+    detached: bool = False
+    resolved: bool = False          # True once the outer future has been set (exec.detached)
+    wait_future: asyncio.Future[Any] | None = None  # resolves on exec.exit for detached
 
 
 @dataclass
 class PendingFileOp:
     future: asyncio.Future[Any]
+
+
+@dataclass
+class PendingGetOp:
+    """Pending exec.get operation (resolves when exec.info arrives)."""
+
+    future: asyncio.Future[Any]
+    on_output: Callable[[str, str], None] | None = None
+    sandbox_ref: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +92,7 @@ class WsSession:
         self.ws: websockets.ClientConnection | None = None
         self.pending_execs: dict[str, PendingExec] = {}
         self.pending_file_ops: dict[str, PendingFileOp] = {}
+        self.pending_get_ops: dict[str, PendingGetOp] = {}
         self.listener_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------
@@ -150,6 +165,9 @@ class WsSession:
     def register_file_op(self, exec_id: str, pending: PendingFileOp) -> None:
         self.pending_file_ops[exec_id] = pending
 
+    def register_get_op(self, exec_id: str, pending: PendingGetOp) -> None:
+        self.pending_get_ops[exec_id] = pending
+
     def reject_pending(
         self, store: dict[str, Any], exec_id: str, error: Exception
     ) -> None:
@@ -161,11 +179,30 @@ class WsSession:
         if not pending.future.done():
             pending.future.set_exception(error)
 
+    def reject_exec(self, exec_id: str, error: Exception) -> None:
+        """Reject a pending exec, honouring the detached/resolved state."""
+        pending = self.pending_execs.pop(exec_id, None)
+        if pending is None:
+            return
+        if pending.timeout_handle:
+            pending.timeout_handle.cancel()
+        if pending.detached and pending.resolved:
+            # Outer future already resolved; reject the wait() future instead.
+            if pending.wait_future and not pending.wait_future.done():
+                pending.wait_future.set_exception(error)
+        else:
+            if not pending.future.done():
+                pending.future.set_exception(error)
+
     def reject_all(self, error: Exception) -> None:
         for eid in list(self.pending_execs):
-            self.reject_pending(self.pending_execs, eid, error)
+            self.reject_exec(eid, error)
         for eid in list(self.pending_file_ops):
             self.reject_pending(self.pending_file_ops, eid, error)
+        for eid in list(self.pending_get_ops):
+            pending = self.pending_get_ops.pop(eid, None)
+            if pending and not pending.future.done():
+                pending.future.set_exception(error)
 
     async def wait_for_exec_start(self, exec_id: str) -> None:
         pending = self.pending_execs.get(exec_id)
@@ -198,7 +235,15 @@ class WsSession:
                 if frame is None or is_auth_ack(frame, self.id):
                     continue
                 exec_id = frame.get("execId")
-                if exec_id in self.pending_file_ops:
+                ftype = frame.get("type")
+
+                # exec.info is always routed to pending_get_ops.
+                # Error frames for pending get ops also go there (before exec map check).
+                if ftype == "exec.info" or (
+                    ftype == "error" and exec_id in self.pending_get_ops
+                ):
+                    self.handle_get_frame(frame)
+                elif exec_id in self.pending_file_ops:
                     self.handle_file_frame(frame)
                 elif exec_id in self.pending_execs:
                     self.handle_exec_frame(frame)
@@ -234,13 +279,40 @@ class WsSession:
                 pending.on_output(data, stream)
             return
 
+        # Detached ack: resolve the outer future with the raw pid/startedAt data.
+        # Sandbox._run() wraps this into a DetachedCommandHandle after awaiting.
+        # The entry stays in pending_execs to receive subsequent output and exec.exit.
+        if ftype == "exec.detached":
+            if pending.timeout_handle:
+                pending.timeout_handle.cancel()
+                pending.timeout_handle = None
+            pending.resolved = True
+            if not pending.future.done():
+                pending.future.set_result({"pid": frame.get("pid", 0), "started_at": frame.get("startedAt", 0)})
+            return
+
         if ftype == "exec.exit":
-            self.resolve_exec(exec_id, frame)
+            self.pending_execs.pop(exec_id, None)
+            if pending.timeout_handle:
+                pending.timeout_handle.cancel()
+            if pending.detached and pending.resolved:
+                # Detached: outer future already resolved; drive the wait() future.
+                if pending.wait_future and not pending.wait_future.done():
+                    pending.wait_future.set_result({"exit_code": frame.get("exitCode", -1)})
+            else:
+                if not pending.future.done():
+                    pending.future.set_result(
+                        ExecResult(
+                            exec_id=exec_id,
+                            stdout=pending.stdout,
+                            stderr=pending.stderr,
+                            exit_code=frame.get("exitCode", -1),
+                        )
+                    )
             return
 
         if ftype == "error":
-            self.reject_pending(
-                self.pending_execs,
+            self.reject_exec(
                 exec_id,
                 SandboxClientError(frame.get("message", f"Command '{exec_id}' failed")),
             )
@@ -292,23 +364,105 @@ class WsSession:
     # Resolution helpers
     # ------------------------------------------------------------------
 
-    def resolve_exec(self, exec_id: str, frame: dict[str, Any]) -> None:
-        pending = self.pending_execs.pop(exec_id, None)
-        if pending is None:
-            return
-        if pending.timeout_handle:
-            pending.timeout_handle.cancel()
-        if not pending.future.done():
-            pending.future.set_result(
-                ExecResult(
-                    exec_id=exec_id,
-                    stdout=pending.stdout,
-                    stderr=pending.stderr,
-                    exit_code=frame.get("exitCode", -1),
-                )
-            )
-
     def resolve_file_op(self, exec_id: str, result: Any) -> None:
         pending = self.pending_file_ops.pop(exec_id, None)
         if pending and not pending.future.done():
             pending.future.set_result(result)
+
+    def handle_get_frame(self, frame: dict[str, Any]) -> None:
+        """Handle exec.info (response to exec.get) and related error frames."""
+        exec_id = frame.get("execId")
+        pending = self.pending_get_ops.get(exec_id)
+        if pending is None:
+            return
+
+        if frame.get("type") == "exec.info":
+            self.resolve_get_op(frame, pending)
+        elif frame.get("type") == "error":
+            self.reject_get_op(frame, pending)
+
+    def resolve_get_op(self, frame: dict[str, Any], pending: PendingGetOp) -> None:
+        """Resolve a pending exec.get by building a command handle and settling the caller's future."""
+        exec_id = frame.get("execId")
+        self.pending_get_ops.pop(exec_id, None)
+        wait_future = self.resolve_exec_entry(frame, pending)
+        command_obj = self.build_command_object(frame, wait_future, pending.sandbox_ref)
+        if not pending.future.done():
+            pending.future.set_result(command_obj)
+
+    def reject_get_op(self, frame: dict[str, Any], pending: PendingGetOp) -> None:
+        """Reject a pending exec.get with a not-found error."""
+        exec_id = frame.get("execId")
+        self.pending_get_ops.pop(exec_id, None)
+        if not pending.future.done():
+            pending.future.set_exception(
+                SandboxCommandNotFoundError(
+                    frame.get("message", f"No running process for execId '{exec_id}'")
+                )
+            )
+
+    def resolve_exec_entry(self, frame: dict[str, Any], pending: PendingGetOp) -> "asyncio.Future[Any]":
+        """Return the wait future for the exec — reusing an existing entry from the same
+        session, or registering a fresh reattached entry for a new/previous connection."""
+        exec_id = frame.get("execId")
+        existing = self.pending_execs.get(exec_id)
+        if existing:
+            self.merge_on_output_callback(existing, pending.on_output)
+            return existing.wait_future
+        return self.register_reattached_exec(frame, pending.on_output)
+
+    def merge_on_output_callback(
+        self,
+        existing: PendingExec,
+        on_output: Callable[[str, str], None] | None,
+    ) -> None:
+        """Append ``on_output`` to an existing exec entry's callback chain,
+        preserving the previous handler."""
+        if not on_output:
+            return
+        prev = existing.on_output
+        def merged(data: str, stream: str, _prev=prev, _new=on_output) -> None:
+            if _prev:
+                _prev(data, stream)
+            _new(data, stream)
+        existing.on_output = merged
+
+    def register_reattached_exec(
+        self,
+        frame: dict[str, Any],
+        on_output: Callable[[str, str], None] | None,
+    ) -> "asyncio.Future[Any]":
+        """Create a fresh ``pending_execs`` entry for a process reattached from a
+        previous connection and return its wait future."""
+        exec_id = frame.get("execId")
+        loop = asyncio.get_running_loop()
+        wait_future: asyncio.Future[Any] = loop.create_future()
+        placeholder: asyncio.Future[Any] = loop.create_future()
+        monitoring = PendingExec(
+            future=placeholder,
+            on_output=on_output,
+            detached=frame.get("detached", False),
+            resolved=True,
+            wait_future=wait_future,
+        )
+        placeholder.set_result(None)
+        self.pending_execs[exec_id] = monitoring
+        return wait_future
+
+    def build_command_object(
+        self,
+        frame: dict[str, Any],
+        wait_future: "asyncio.Future[Any]",
+        sandbox: Any,
+    ) -> DetachedCommandHandle:
+        """Build the :class:`DetachedCommandHandle` returned to the caller of ``get_command``."""
+        exec_id = frame.get("execId")
+        return DetachedCommandHandle(
+            exec_id=exec_id,
+            pid=frame.get("pid", 0),
+            started_at=frame.get("startedAt", 0),
+            detached=frame.get("detached", False),
+            wait_future=wait_future,
+            sandbox_ref=sandbox,
+            command=frame.get("command"),
+        )

@@ -20,7 +20,7 @@ from .http import (
     normalize_api_host,
     sandbox_http_error,
 )
-from .ws import PendingExec, PendingFileOp, WsSession
+from .ws import PendingExec, PendingFileOp, PendingGetOp, WsSession
 from .errors import (
     SandboxClientError,
     SandboxInitializationError,
@@ -28,7 +28,7 @@ from .errors import (
 )
 from .types import (
     SANDBOX_SIZES,
-    ExecResult,
+    DetachedCommandHandle,
     ExecTask,
     FileEntry,
     Policy,
@@ -57,7 +57,7 @@ class Sandbox:
         api_host: str,
         api_key: str,
         token: str | None = None,
-        public_url_template: str | None = None,
+        preview_urls: dict[str | int, str] | None = None,
         management_endpoint: str | None = None,
         verify_ssl: bool = True,
     ) -> None:
@@ -72,7 +72,7 @@ class Sandbox:
         self.api_host = api_host
         self.api_key = api_key
         self.token = token
-        self.public_url_template = public_url_template
+        self.preview_urls = preview_urls or {}
         self.management_endpoint = management_endpoint
         self.verify_ssl = verify_ssl
 
@@ -168,7 +168,7 @@ class Sandbox:
             cluster=payload.get("cluster"),
             region=payload.get("region"),
             max_lifetime=payload.get("maxLifetime", 3600),
-            public_url_template=payload.get("publicUrlTemplate"),
+            preview_urls=payload.get("previewUrls") or {},
             management_endpoint=payload.get("managementEndpoint"),
             namespace=creds["namespace"],
             api_host=creds["api_host"],
@@ -222,6 +222,7 @@ class Sandbox:
             cluster=payload.get("cluster"),
             region=payload.get("region"),
             max_lifetime=payload.get("maxLifetime", 3600),
+            preview_urls=payload.get("previewUrls") or {},
             namespace=creds["namespace"],
             api_host=creds["api_host"],
             api_key=creds["api_key"],
@@ -251,29 +252,54 @@ class Sandbox:
         command: str,
         *,
         timeout: float | None = None,
+        detached: bool = False,
         on_output: Callable[[str, str], None] | None = None,
         stdin: str | bytes | None = None,
     ) -> ExecTask:
         """Execute a command inside the sandbox.
 
-        Returns an :class:`ExecTask` that can be ``await``-ed for the result.
-        The task's ``exec_id`` attribute can be used with
-        :meth:`write_stdin` / :meth:`close_stdin` before awaiting.
+        For **foreground** commands (default), returns an :class:`ExecTask` that
+        resolves to :class:`ExecResult` when the command exits.
+
+        For **detached** commands (``detached=True``), returns an
+        :class:`ExecTask` that resolves to a :class:`DetachedCommandHandle`
+        immediately once the process has started.  Up to 5 detached commands may
+        run concurrently per sandbox.
+
+        ``timeout`` is not supported with ``detached=True``.
 
         Args:
             command: Shell command to run.
-            timeout: Timeout in milliseconds (not seconds).
+            timeout: Timeout in milliseconds (foreground only).
+            detached: When ``True``, run as a detached background process.
             on_output: Callback invoked with ``(data, stream)`` for each chunk.
             stdin: Data to write to stdin at startup.
 
         Returns:
-            An :class:`ExecTask` that resolves to an :class:`ExecResult`.
+            An :class:`ExecTask` that resolves to :class:`ExecResult` (foreground)
+            or :class:`DetachedCommandHandle` (detached).
         """
         self.ensure_open()
+
+        if detached and timeout is not None:
+            raise SandboxClientError(
+                "timeout is not supported with detached=True"
+            )
+
         exec_id = f"exec-{secrets.token_hex(12)}"
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[ExecResult] = loop.create_future()
-        pending = PendingExec(future=future, on_output=on_output)
+        future: asyncio.Future[Any] = loop.create_future()
+
+        wait_future: asyncio.Future[Any] | None = None
+        if detached:
+            wait_future = loop.create_future()
+
+        pending = PendingExec(
+            future=future,
+            on_output=on_output,
+            detached=detached,
+            wait_future=wait_future,
+        )
 
         if timeout is not None:
             pending.timeout_handle = loop.call_later(
@@ -286,17 +312,62 @@ class Sandbox:
 
         self.session.register_exec(exec_id, pending)
 
-        async def _run() -> ExecResult:
-            await self.session.send_frame(
-                {"type": "exec.run", "execId": exec_id, "command": command}
-            )
+        async def _run() -> Any:
+            frame: dict[str, Any] = {"type": "exec.run", "execId": exec_id, "command": command}
+            if detached:
+                frame["detached"] = True
+            await self.session.send_frame(frame)
             pending.started.set()
             if stdin is not None:
                 await self.write_stdin(exec_id, stdin)
                 await self.close_stdin(exec_id)
-            return await future
+            result = await future
+            if not detached:
+                return result
+            return DetachedCommandHandle(
+                exec_id=exec_id,
+                pid=result["pid"],
+                started_at=result["started_at"],
+                detached=True,
+                wait_future=wait_future,
+                sandbox_ref=self,
+                command=command,
+            )
 
         return ExecTask(exec_id=exec_id, _task=loop.create_task(_run()))
+
+    async def get_command(
+        self,
+        exec_id: str,
+        *,
+        on_output: Callable[[str, str], None] | None = None,
+    ) -> DetachedCommandHandle:
+        """Re-attach to a detached command that is still running in the sandbox.
+
+        Sends an ``exec.get`` frame and resolves with a
+        :class:`DetachedCommandHandle` once the ``exec.info`` response arrives.
+
+        Args:
+            exec_id: The ``exec_id`` returned by the original :meth:`exec` call.
+            on_output: Callback invoked with ``(data, stream)`` for live output
+                from the re-attach point onward.
+
+        Returns:
+            A :class:`DetachedCommandHandle`.
+
+        Raises:
+            SandboxCommandNotFoundError: When no process with that ``exec_id``
+                is currently running (already exited or never existed).
+        """
+        self.ensure_open()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[DetachedCommandHandle] = loop.create_future()
+        self.session.register_get_op(
+            exec_id,
+            PendingGetOp(future=future, on_output=on_output, sandbox_ref=self),
+        )
+        await self.session.send_frame({"type": "exec.get", "execId": exec_id})
+        return await future
 
     async def kill(self, exec_id: str, signal: str = "SIGTERM") -> None:
         """Send a signal to a running command."""

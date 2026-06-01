@@ -95,6 +95,31 @@ print("exit code:", result.exit_code)
 > Note: Commands run in the `/workspace` directory by default, this is not configurable
 
 
+### Detached Commands
+
+Pass `detached=True` to run a long-lived background process.
+
+```python
+# Start a background server
+handle = await sandbox.exec("python server.py", detached=True)
+
+# Wait for it to exit (e.g. after you stop it)
+result = await handle.wait()
+print("exit code:", result.exit_code)
+
+# Send a signal to stop it
+await handle.kill()
+```
+
+If the process is still running and you need a handle to it from a different context, use `get_command()` to re-attach by `exec_id`:
+
+```python
+handle = await sandbox.get_command(exec_id, on_output=lambda data, stream: print(data, end=""))
+await handle.wait()
+```
+
+> Note: Only 5 background processes are allowed to run at once currently.
+
 ### File Management
 
 ```python

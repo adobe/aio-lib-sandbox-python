@@ -32,3 +32,7 @@ class SandboxTimeoutError(SandboxSDKError):
 
 class SandboxWebSocketError(SandboxSDKError):
     """WebSocket transport error."""
+
+
+class SandboxCommandNotFoundError(SandboxSDKError):
+    """Raised by ``get_command()`` when no running process matches the provided exec_id."""
