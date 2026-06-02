@@ -9,6 +9,7 @@ __version__ = "0.1.0a1"
 
 from .errors import (
     SandboxClientError,
+    SandboxCommandNotFoundError,
     SandboxInitializationError,
     SandboxInvalidPortError,
     SandboxNotFoundError,
@@ -21,6 +22,7 @@ from .errors import (
 from .sandbox import Sandbox
 from .types import (
     SANDBOX_SIZES,
+    DetachedCommandHandle,
     EgressRule,
     ExecResult,
     ExecTask,
@@ -33,6 +35,7 @@ from .types import (
 
 __all__ = [
     "Sandbox",
+    "DetachedCommandHandle",
     "ExecResult",
     "ExecTask",
     "WriteResult",
@@ -51,4 +54,5 @@ __all__ = [
     "SandboxUnauthorizedError",
     "SandboxTimeoutError",
     "SandboxWebSocketError",
+    "SandboxCommandNotFoundError",
 ]

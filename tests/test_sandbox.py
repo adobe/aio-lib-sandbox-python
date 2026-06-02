@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import websockets
 
 from aio_lib_sandbox import (
     SANDBOX_SIZES,
+    DetachedCommandHandle,
     ExecResult,
     FileEntry,
     Sandbox,
@@ -18,6 +22,7 @@ from aio_lib_sandbox import (
 )
 from aio_lib_sandbox.errors import (
     SandboxClientError,
+    SandboxCommandNotFoundError,
     SandboxInitializationError,
     SandboxInvalidPortError,
     SandboxNotFoundError,
@@ -27,8 +32,8 @@ from aio_lib_sandbox.errors import (
     SandboxWebSocketError,
 )
 from aio_lib_sandbox.frames import normalize_size
+from aio_lib_sandbox.ws import PendingExec, PendingFileOp, PendingGetOp, WsSession
 from aio_lib_sandbox.sandbox import _parse_preview_urls
-from aio_lib_sandbox.ws import PendingExec, PendingFileOp, WsSession
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -75,6 +80,22 @@ def _frame(ws, payload: dict) -> None:
     """Queue a JSON frame to be yielded by ws.__aiter__."""
     # we patch the listener separately; for direct frame handling tests,
     # call handle_exec_frame / handle_file_frame directly.
+
+
+class _AsyncFrameStream:
+    def __init__(self, *frames):
+        self.frames = list(frames)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.frames:
+            raise StopAsyncIteration
+        frame = self.frames.pop(0)
+        if isinstance(frame, BaseException):
+            raise frame
+        return frame
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +193,9 @@ class TestSandboxCreate:
             "status": "ready",
             "token": "tok-new",
             "maxLifetime": 3600,
+            "previewUrls": {
+                "3000": "https://sb-new-3000.preview.example.net",
+            },
         }
 
         with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req, \
@@ -185,6 +209,9 @@ class TestSandboxCreate:
 
         assert sandbox.id == "sb-new"
         assert sandbox.status == "ready"
+        assert sandbox.preview_urls == {
+            3000: "https://sb-new-3000.preview.example.net",
+        }
         mock_req.assert_called_once()
         mock_connect.assert_called_once()
 
@@ -290,6 +317,174 @@ class TestSandboxCreate:
             8080: "https://sb-ports-8080.preview.example.net",
         }
         assert sandbox.get_url(3000) == "https://sb-ports-3000.preview.example.net"
+
+
+# ---------------------------------------------------------------------------
+# WebSocket connection
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketConnection:
+    @pytest.mark.asyncio
+    async def test_connect_opens_socket_authenticates_and_starts_listener(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+            verify_ssl=False,
+        )
+        ws = AsyncMock()
+
+        async def noop_listen():
+            return None
+
+        with patch("aio_lib_sandbox.ws.websockets.connect", new=AsyncMock(return_value=ws)) as connect, \
+             patch.object(session, "authenticate", new=AsyncMock()) as authenticate, \
+             patch.object(session, "listen", new=noop_listen):
+            await session.connect()
+            await session.listener_task
+
+        assert session.ws is ws
+        connect.assert_awaited_once()
+        assert connect.await_args.kwargs["ssl"].check_hostname is False
+        authenticate.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_is_idempotent_when_socket_exists(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        session.ws = AsyncMock()
+
+        with patch("aio_lib_sandbox.ws.websockets.connect", new=AsyncMock()) as connect:
+            await session.connect()
+
+        connect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_wraps_websocket_connect_errors(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+
+        with patch(
+            "aio_lib_sandbox.ws.websockets.connect",
+            new=AsyncMock(side_effect=OSError("network down")),
+        ):
+            with pytest.raises(SandboxWebSocketError, match="Could not connect sandbox"):
+                await session.connect()
+
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_non_ack_frame(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        session.ws = AsyncMock()
+        session.ws.recv = AsyncMock(return_value=json.dumps({"type": "auth.error"}))
+
+        with pytest.raises(SandboxUnauthorizedError, match="rejected"):
+            await session.authenticate()
+
+        session.ws.send.assert_awaited_once_with(
+            json.dumps({"type": "auth", "token": "tok-abc"})
+        )
+
+    def test_ensure_open_raises_when_socket_missing(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+
+        with pytest.raises(SandboxWebSocketError, match="is not connected"):
+            session.ensure_open()
+
+    @pytest.mark.asyncio
+    async def test_listen_routes_frames_and_clears_socket(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        session.ws = _AsyncFrameStream(
+            "not-json",
+            json.dumps({"type": "auth.ok", "sandboxId": "sb-test"}),
+            json.dumps({"type": "exec.info", "execId": "get-1"}),
+            json.dumps({"type": "file.content", "execId": "file-1"}),
+            json.dumps({"type": "exec.output", "execId": "exec-1"}),
+        )
+        session.pending_get_ops["get-1"] = PendingGetOp(
+            future=asyncio.get_running_loop().create_future()
+        )
+        session.pending_file_ops["file-1"] = PendingFileOp(
+            future=asyncio.get_running_loop().create_future()
+        )
+        session.pending_execs["exec-1"] = PendingExec(
+            future=asyncio.get_running_loop().create_future()
+        )
+        session.handle_get_frame = MagicMock()
+        session.handle_file_frame = MagicMock()
+        session.handle_exec_frame = MagicMock()
+
+        await session.listen()
+
+        session.handle_get_frame.assert_called_once_with(
+            {"type": "exec.info", "execId": "get-1"}
+        )
+        session.handle_file_frame.assert_called_once_with(
+            {"type": "file.content", "execId": "file-1"}
+        )
+        session.handle_exec_frame.assert_called_once_with(
+            {"type": "exec.output", "execId": "exec-1"}
+        )
+        assert session.ws is None
+
+    @pytest.mark.asyncio
+    async def test_listen_rejects_pending_on_unintentional_close(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        future = asyncio.get_running_loop().create_future()
+        session.pending_execs["exec-1"] = PendingExec(future=future)
+        session.ws = _AsyncFrameStream(websockets.ConnectionClosedError(None, None))
+
+        await session.listen()
+
+        with pytest.raises(SandboxWebSocketError, match="closed with code 1006"):
+            await future
+        assert session.ws is None
+
+    @pytest.mark.asyncio
+    async def test_listen_resolves_pending_on_intentional_close(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        future = asyncio.get_running_loop().create_future()
+        session.pending_execs["exec-1"] = PendingExec(future=future)
+        session.intentional_close = True
+        session.ws = _AsyncFrameStream(websockets.ConnectionClosedError(None, None))
+
+        await session.listen()
+
+        assert await future == ExecResult(
+            exec_id="exec-1",
+            stdout="",
+            stderr="",
+            exit_code=None,
+            destroyed=True,
+        )
+        assert session.ws is None
+        assert session.intentional_close is False
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +648,14 @@ class TestExec:
         with pytest.raises(SandboxWebSocketError):
             sandbox.exec("cmd")
 
+    def test_handle_exec_frame_ignores_missing_pending_exec(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.output", "execId": "exec-missing", "data": "ignored"}
+        )
+
 
 # ---------------------------------------------------------------------------
 # File operations
@@ -563,6 +766,28 @@ class TestFileOps:
         result = await future
         assert result == []
 
+    def test_handle_file_frame_ignores_missing_pending_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.handle_file_frame(
+            {"type": "file.content", "execId": "file-missing", "content": "ignored"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_file_error_frame_rejects_pending_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        future = asyncio.get_running_loop().create_future()
+        sandbox.session.pending_file_ops["file-err"] = PendingFileOp(future=future)
+
+        sandbox.session.handle_file_frame(
+            {"type": "error", "execId": "file-err", "message": "read failed"}
+        )
+
+        with pytest.raises(SandboxClientError, match="read failed"):
+            await future
+
 
 # ---------------------------------------------------------------------------
 # get_url
@@ -623,6 +848,62 @@ class TestDestroy:
         ws.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_destroy_resolves_pending_foreground_exec(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {"status": "destroyed"}
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.delete = AsyncMock(return_value=mock_resp)
+
+        task = sandbox.exec("sleep 100")
+        await asyncio.sleep(0)
+
+        with patch("aio_lib_sandbox.sandbox.httpx.AsyncClient", return_value=mock_client):
+            await sandbox.destroy()
+
+        result = await task
+        assert result == ExecResult(
+            exec_id=task.exec_id,
+            stdout="",
+            stderr="",
+            exit_code=None,
+            destroyed=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_destroy_resolves_detached_wait(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {"status": "destroyed"}
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.delete = AsyncMock(return_value=mock_resp)
+
+        task = sandbox.exec("sleep infinity", detached=True)
+        await asyncio.sleep(0)
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": task.exec_id, "pid": 1234, "startedAt": 100}
+        )
+        handle = await task
+        wait_task = asyncio.create_task(handle.wait())
+
+        with patch("aio_lib_sandbox.sandbox.httpx.AsyncClient", return_value=mock_client):
+            await sandbox.destroy()
+
+        assert await wait_task == {"exit_code": None, "destroyed": True}
+
+    @pytest.mark.asyncio
     async def test_destroy_raises_on_401(self):
         sandbox = _make_sandbox()
         _inject_ws(sandbox)
@@ -640,6 +921,22 @@ class TestDestroy:
         with patch("aio_lib_sandbox.sandbox.httpx.AsyncClient", return_value=mock_client):
             with pytest.raises(SandboxUnauthorizedError):
                 await sandbox.destroy()
+
+    @pytest.mark.asyncio
+    async def test_destroy_wraps_http_client_errors_and_clears_intentional_close(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.delete = AsyncMock(side_effect=httpx.HTTPError("boom"))
+
+        with patch("aio_lib_sandbox.sandbox.httpx.AsyncClient", return_value=mock_client):
+            with pytest.raises(SandboxClientError, match="Could not destroy sandbox"):
+                await sandbox.destroy()
+
+        assert sandbox.session.intentional_close is False
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +965,174 @@ class TestWebSocketClose:
 
         with pytest.raises(SandboxWebSocketError):
             await file_future
+
+    @pytest.mark.asyncio
+    async def test_reject_all_rejects_pending_get_operations(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        loop = asyncio.get_running_loop()
+        get_future = loop.create_future()
+        sandbox.session.pending_get_ops["exec-1"] = PendingGetOp(future=get_future)
+
+        sandbox.session.reject_all(SandboxWebSocketError("closed"))
+
+        with pytest.raises(SandboxWebSocketError, match="closed"):
+            await get_future
+
+    @pytest.mark.asyncio
+    async def test_register_file_op_tracks_pending_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        pending = PendingFileOp(future=asyncio.get_running_loop().create_future())
+
+        sandbox.session.register_file_op("file-1", pending)
+
+        assert sandbox.session.pending_file_ops["file-1"] is pending
+
+    def test_reject_pending_ignores_missing_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.reject_pending(
+            sandbox.session.pending_file_ops,
+            "file-missing",
+            SandboxWebSocketError("closed"),
+        )
+
+        assert sandbox.session.pending_file_ops == {}
+
+    @pytest.mark.asyncio
+    async def test_close_with_intentional_flag_resolves_pending_and_cancels_listener(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        exec_future = asyncio.get_running_loop().create_future()
+        sandbox.session.pending_execs["exec-1"] = PendingExec(future=exec_future)
+        sandbox.session.listener_task = asyncio.create_task(asyncio.sleep(60))
+
+        await sandbox.session.close(intentional=True)
+
+        assert await exec_future == ExecResult(
+            exec_id="exec-1",
+            stdout="",
+            stderr="",
+            exit_code=None,
+            destroyed=True,
+        )
+        assert sandbox.session.listener_task is None
+        assert sandbox.session.ws is None
+        assert sandbox.session.intentional_close is False
+        ws.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_resolve_all_on_intentional_close_resolves_file_and_get_ops(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        loop = asyncio.get_running_loop()
+        file_future = loop.create_future()
+        get_future = loop.create_future()
+        sandbox.session.pending_file_ops["file-1"] = PendingFileOp(future=file_future)
+        sandbox.session.pending_get_ops["exec-1"] = PendingGetOp(future=get_future)
+
+        sandbox.session.resolve_all_on_intentional_close()
+
+        assert await file_future is None
+        assert await get_future is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_detached_before_ack_on_intentional_close(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        task = sandbox.exec("sleep infinity", detached=True)
+        await asyncio.sleep(0)
+
+        sandbox.session.resolve_exec_on_intentional_close(task.exec_id)
+
+        handle = await task
+        assert handle.pid is None
+        assert handle.started_at is None
+        assert await handle.wait() == {"exit_code": None, "destroyed": True}
+
+    def test_resolve_exec_on_intentional_close_ignores_missing_exec(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.resolve_exec_on_intentional_close("exec-missing")
+
+    @pytest.mark.asyncio
+    async def test_resolve_exec_on_intentional_close_cancels_timeout_handle(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        future = asyncio.get_running_loop().create_future()
+        timeout_handle = MagicMock()
+        sandbox.session.pending_execs["exec-1"] = PendingExec(
+            future=future,
+            timeout_handle=timeout_handle,
+        )
+
+        sandbox.session.resolve_exec_on_intentional_close("exec-1")
+
+        timeout_handle.cancel.assert_called_once()
+        assert await future == ExecResult(
+            exec_id="exec-1",
+            stdout="",
+            stderr="",
+            exit_code=None,
+            destroyed=True,
+        )
+
+    def test_reject_exec_ignores_missing_exec(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.reject_exec("exec-missing", SandboxWebSocketError("closed"))
+
+    @pytest.mark.asyncio
+    async def test_reject_exec_cancels_timeout_handle(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        future = asyncio.get_running_loop().create_future()
+        timeout_handle = MagicMock()
+        sandbox.session.pending_execs["exec-1"] = PendingExec(
+            future=future,
+            timeout_handle=timeout_handle,
+        )
+
+        sandbox.session.reject_exec("exec-1", SandboxWebSocketError("closed"))
+
+        timeout_handle.cancel.assert_called_once()
+        with pytest.raises(SandboxWebSocketError, match="closed"):
+            await future
+
+    @pytest.mark.asyncio
+    async def test_wait_for_exec_start_blocks_until_started(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        loop = asyncio.get_running_loop()
+        pending = PendingExec(future=loop.create_future())
+        sandbox.session.pending_execs["exec-1"] = pending
+
+        waiter = asyncio.create_task(sandbox.session.wait_for_exec_start("exec-1"))
+        await asyncio.sleep(0)
+        assert not waiter.done()
+
+        pending.started.set()
+        await waiter
+
+    def test_timeout_exec_still_rejects_when_no_running_loop(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        loop = asyncio.new_event_loop()
+        try:
+            future = loop.create_future()
+            sandbox.session.pending_execs["exec-1"] = PendingExec(future=future)
+
+            sandbox.session.timeout_exec("exec-1", "sleep 10", 1000)
+
+            assert future.done()
+            with pytest.raises(SandboxTimeoutError):
+                future.result()
+        finally:
+            loop.close()
 
 
 # ---------------------------------------------------------------------------
@@ -739,9 +1204,325 @@ class TestBuildCreateBodyPolicy:
 
 
 # ---------------------------------------------------------------------------
-# _parse_preview_urls
+# Detached exec
 # ---------------------------------------------------------------------------
 
+class TestDetachedExec:
+    @pytest.mark.asyncio
+    async def test_exec_detached_resolves_with_handle_on_exec_detached(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        task = sandbox.exec("npm run dev", detached=True)
+        exec_id = task.exec_id
+
+        await asyncio.sleep(0)
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": exec_id, "pid": 9999, "startedAt": 1234567890}
+        )
+
+        handle = await task
+        assert isinstance(handle, DetachedCommandHandle)
+        assert handle.exec_id == exec_id
+        assert handle.pid == 9999
+        assert handle.started_at == 1234567890
+        assert handle.detached is True
+
+    @pytest.mark.asyncio
+    async def test_exec_detached_wait_resolves_on_exec_exit(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        task = sandbox.exec("sleep 100", detached=True)
+        exec_id = task.exec_id
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": exec_id, "pid": 1234, "startedAt": 1000}
+        )
+
+        handle = await task
+
+        wait_coro = handle.wait()
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.exit", "execId": exec_id, "exitCode": 0}
+        )
+
+        result = await wait_coro
+        assert result["exit_code"] == 0
+
+    @pytest.mark.asyncio
+    async def test_exec_detached_output_frames_delivered_after_detached_ack(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        chunks = []
+        task = sandbox.exec("npm run dev", detached=True, on_output=lambda d, s: chunks.append((d, s)))
+        exec_id = task.exec_id
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": exec_id, "pid": 9000, "startedAt": 1}
+        )
+        await task
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.output", "execId": exec_id, "stream": "stdout", "data": "compiled\n"}
+        )
+        assert chunks == [("compiled\n", "stdout")]
+
+    @pytest.mark.asyncio
+    async def test_exec_detached_error_after_ack_rejects_wait(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        task = sandbox.exec("bad-cmd", detached=True)
+        exec_id = task.exec_id
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": exec_id, "pid": 1, "startedAt": 1}
+        )
+        handle = await task
+
+        wait_coro = handle.wait()
+        sandbox.session.handle_exec_frame(
+            {"type": "error", "execId": exec_id, "message": "process crashed"}
+        )
+
+        with pytest.raises(SandboxClientError, match="process crashed"):
+            await wait_coro
+
+    def test_exec_detached_with_timeout_raises(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        with pytest.raises(SandboxClientError, match="timeout"):
+            sandbox.exec("cmd", detached=True, timeout=1000)
+
+    @pytest.mark.asyncio
+    async def test_detached_handle_forwards_stdin_and_kill_helpers(self):
+        sandbox = _make_sandbox()
+        wait_future = asyncio.get_running_loop().create_future()
+        handle = DetachedCommandHandle(
+            exec_id="exec-1",
+            pid=1234,
+            started_at=100,
+            detached=True,
+            wait_future=wait_future,
+            sandbox_ref=sandbox,
+        )
+        sandbox.write_stdin = AsyncMock()
+        sandbox.close_stdin = AsyncMock()
+        sandbox.kill = AsyncMock()
+
+        await handle.write_stdin("input")
+        await handle.close_stdin()
+        await handle.kill("SIGKILL")
+
+        sandbox.write_stdin.assert_awaited_once_with("exec-1", "input")
+        sandbox.close_stdin.assert_awaited_once_with("exec-1")
+        sandbox.kill.assert_awaited_once_with("exec-1", "SIGKILL")
+
+    @pytest.mark.asyncio
+    async def test_detached_ack_cancels_timeout_handle(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        wait_future = loop.create_future()
+        timeout_handle = MagicMock()
+        sandbox.session.pending_execs["exec-1"] = PendingExec(
+            future=future,
+            timeout_handle=timeout_handle,
+            detached=True,
+            wait_future=wait_future,
+        )
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": "exec-1", "pid": 1234, "startedAt": 100}
+        )
+
+        timeout_handle.cancel.assert_called_once()
+        assert sandbox.session.pending_execs["exec-1"].timeout_handle is None
+
+    @pytest.mark.asyncio
+    async def test_exec_exit_cancels_timeout_handle(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        future = asyncio.get_running_loop().create_future()
+        timeout_handle = MagicMock()
+        sandbox.session.pending_execs["exec-1"] = PendingExec(
+            future=future,
+            timeout_handle=timeout_handle,
+        )
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.exit", "execId": "exec-1", "exitCode": 0}
+        )
+
+        timeout_handle.cancel.assert_called_once()
+        assert (await future).exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# get_command
+# ---------------------------------------------------------------------------
+
+class TestGetCommand:
+    @pytest.mark.asyncio
+    async def test_get_command_resolves_with_handle_on_exec_info(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        loop = asyncio.get_event_loop()
+        coro = sandbox.get_command("exec-d1e2f3a4")
+        task = loop.create_task(coro)
+
+        await asyncio.sleep(0)
+
+        sandbox.session.handle_get_frame({
+            "type": "exec.info",
+            "execId": "exec-d1e2f3a4",
+            "command": "npm run dev",
+            "pid": 5678,
+            "startedAt": 1711036812,
+            "detached": True,
+        })
+
+        handle = await task
+        assert isinstance(handle, DetachedCommandHandle)
+        assert handle.exec_id == "exec-d1e2f3a4"
+        assert handle.command == "npm run dev"
+        assert handle.pid == 5678
+        assert handle.started_at == 1711036812
+
+    @pytest.mark.asyncio
+    async def test_get_command_wait_resolves_on_exec_exit(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        loop = asyncio.get_event_loop()
+        coro = sandbox.get_command("exec-reattach")
+        get_task = loop.create_task(coro)
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_get_frame({
+            "type": "exec.info",
+            "execId": "exec-reattach",
+            "command": "sleep 60",
+            "pid": 1111,
+            "startedAt": 100,
+            "detached": True,
+        })
+
+        handle = await get_task
+        wait_coro = handle.wait()
+
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.exit", "execId": "exec-reattach", "exitCode": 143}
+        )
+
+        result = await wait_coro
+        assert result["exit_code"] == 143
+
+    @pytest.mark.asyncio
+    async def test_get_command_raises_command_not_found_on_error(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+
+        loop = asyncio.get_event_loop()
+        coro = sandbox.get_command("exec-gone")
+        get_task = loop.create_task(coro)
+
+        await asyncio.sleep(0)
+        sandbox.session.handle_get_frame({
+            "type": "error",
+            "execId": "exec-gone",
+            "code": "NOT_FOUND",
+            "message": "no running process for execId",
+        })
+
+        with pytest.raises(SandboxCommandNotFoundError):
+            await get_task
+
+    @pytest.mark.asyncio
+    async def test_get_command_reuses_existing_exec_and_merges_output_callbacks(self):
+        sandbox = _make_sandbox()
+        ws = _inject_ws(sandbox)
+        ws.send = AsyncMock()
+        original_chunks = []
+        reattached_chunks = []
+
+        task = sandbox.exec(
+            "npm run dev",
+            detached=True,
+            on_output=lambda data, stream: original_chunks.append((data, stream)),
+        )
+        await asyncio.sleep(0)
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.detached", "execId": task.exec_id, "pid": 1234, "startedAt": 100}
+        )
+        original_handle = await task
+
+        get_task = asyncio.create_task(
+            sandbox.get_command(
+                task.exec_id,
+                on_output=lambda data, stream: reattached_chunks.append((data, stream)),
+            )
+        )
+        await asyncio.sleep(0)
+        sandbox.session.handle_get_frame({
+            "type": "exec.info",
+            "execId": task.exec_id,
+            "command": "npm run dev",
+            "pid": 1234,
+            "startedAt": 100,
+            "detached": True,
+        })
+        reattached_handle = await get_task
+
+        assert reattached_handle._wait_future is original_handle._wait_future
+        sandbox.session.handle_exec_frame(
+            {"type": "exec.output", "execId": task.exec_id, "stream": "stderr", "data": "ready\n"}
+        )
+        assert original_chunks == [("ready\n", "stderr")]
+        assert reattached_chunks == [("ready\n", "stderr")]
+
+    @pytest.mark.asyncio
+    async def test_merge_on_output_callback_ignores_missing_new_callback(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        chunks = []
+        pending = PendingExec(
+            future=asyncio.get_running_loop().create_future(),
+            on_output=lambda data, stream: chunks.append((data, stream)),
+        )
+
+        sandbox.session.merge_on_output_callback(pending, None)
+        pending.on_output("line\n", "stdout")
+
+        assert chunks == [("line\n", "stdout")]
+
+    def test_handle_get_frame_ignores_missing_pending_operation(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+
+        sandbox.session.handle_get_frame(
+            {"type": "exec.info", "execId": "exec-missing"}
+        )
+
+# ---------------------------------------------------------------------------
+# _parse_preview_urls
+# ---------------------------------------------------------------------------
 
 class TestParsePreviewUrls:
     def test_returns_empty_for_non_dict(self):
