@@ -512,6 +512,27 @@ class TestSandboxGet:
         assert sandbox.session is None
 
     @pytest.mark.asyncio
+    async def test_get_parses_preview_urls(self):
+        payload = {
+            "sandboxId": "sb-get",
+            "status": "running",
+            "previewUrls": {
+                "3000": "https://sb-get-3000.preview.example.net",
+            },
+        }
+
+        with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)):
+            sandbox = await Sandbox.get(
+                "sb-get",
+                api_host="https://runtime.example.net",
+                namespace="ns",
+                auth="uuid:key",
+            )
+
+        assert sandbox.preview_urls == {3000: "https://sb-get-3000.preview.example.net"}
+        assert sandbox.get_url(3000) == "https://sb-get-3000.preview.example.net"
+
+    @pytest.mark.asyncio
     async def test_get_not_found_raises(self):
         with patch(
             "aio_lib_sandbox.sandbox.api_request",
@@ -658,6 +679,23 @@ class TestFileOps:
             result = await sandbox.read_file("/app/hello.js")
 
         assert result == "console.log('hi')"
+
+    @pytest.mark.asyncio
+    async def test_write_file_encodes_content_and_delegates(self):
+        sandbox = _make_sandbox()
+        _inject_ws(sandbox)
+        write_result = WriteResult(path="/app/hello.js", ok=True, size=17)
+
+        with patch.object(sandbox, "file_op", new=AsyncMock(return_value=write_result)) as file_op:
+            result = await sandbox.write_file("/app/hello.js", "console.log('hi')")
+
+        assert result is write_result
+        file_op.assert_awaited_once_with(
+            "file.write",
+            path="/app/hello.js",
+            content=base64.b64encode(b"console.log('hi')").decode(),
+            encoding="base64",
+        )
 
     @pytest.mark.asyncio
     async def test_read_file_via_frame_handler(self):
