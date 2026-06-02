@@ -55,15 +55,15 @@ pip install hatch
 
    ```bash
    git add src/aio_lib_sandbox/__init__.py
-   git commit -m "chore: release v$(hatch version)"
-   git tag "v$(hatch version)"
+   git commit -m "$(hatch version)"
+   git tag "$(hatch version)"
    ```
 
 5. **Push the commit and tag** to `main`:
 
    ```bash
    git push origin main
-   git push origin "v$(hatch version)"
+   git push origin "$(hatch version)"
    ```
 
 6. **CI publishes to PyPI automatically.** The `on-push-publish-to-pypi` workflow triggers because `src/aio_lib_sandbox/__init__.py` changed on `main`. Monitor progress in the [Actions tab](https://github.com/adobe/aio-lib-sandbox-python/actions).
