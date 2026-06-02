@@ -11,6 +11,13 @@ from typing import Any, Callable
 
 import httpx
 
+from .errors import (
+    SandboxClientError,
+    SandboxInitializationError,
+    SandboxInvalidPortError,
+    SandboxPortNotProvisionedError,
+    SandboxWebSocketError,
+)
 from .frames import normalize_size
 from .http import (
     api_request,
@@ -18,14 +25,6 @@ from .http import (
     build_ws_endpoint,
     normalize_api_host,
     sandbox_http_error,
-)
-from .ws import PendingExec, PendingFileOp, PendingGetOp, WsSession
-from .errors import (
-    SandboxClientError,
-    SandboxInitializationError,
-    SandboxInvalidPortError,
-    SandboxPortNotProvisionedError,
-    SandboxWebSocketError,
 )
 from .types import (
     SANDBOX_SIZES,
@@ -35,6 +34,7 @@ from .types import (
     Policy,
     WriteResult,
 )
+from .ws import PendingExec, PendingFileOp, PendingGetOp, WsSession
 
 
 class Sandbox:
@@ -162,9 +162,7 @@ class Sandbox:
         )
 
         sandbox_id = payload["sandboxId"]
-        endpoint = payload.get("wsEndpoint") or build_ws_endpoint(
-            creds["api_host"], creds["namespace"], sandbox_id
-        )
+        endpoint = payload.get("wsEndpoint") or build_ws_endpoint(creds["api_host"], creds["namespace"], sandbox_id)
 
         sandbox = cls(
             sandbox_id=sandbox_id,
@@ -287,9 +285,7 @@ class Sandbox:
         self.ensure_open()
 
         if detached and timeout is not None:
-            raise SandboxClientError(
-                "timeout is not supported with detached=True"
-            )
+            raise SandboxClientError("timeout is not supported with detached=True")
 
         exec_id = f"exec-{secrets.token_hex(12)}"
         loop = asyncio.get_running_loop()
@@ -417,12 +413,8 @@ class Sandbox:
         Returns:
             A :class:`WriteResult` confirmation.
         """
-        encoded = base64.b64encode(
-            content if isinstance(content, bytes) else content.encode()
-        ).decode()
-        return await self.file_op(
-            "file.write", path=path, content=encoded, encoding="base64"
-        )
+        encoded = base64.b64encode(content if isinstance(content, bytes) else content.encode()).decode()
+        return await self.file_op("file.write", path=path, content=encoded, encoding="base64")
 
     async def list_files(self, path: str) -> list[FileEntry]:
         """List the contents of a directory inside the sandbox.
@@ -465,9 +457,7 @@ class Sandbox:
                 declared in ``create(ports=[...])``.
         """
         if not isinstance(port, int) or port < 1 or port > 65535:
-            raise SandboxInvalidPortError(
-                f"Invalid port '{port}': must be an integer between 1 and 65535"
-            )
+            raise SandboxInvalidPortError(f"Invalid port '{port}': must be an integer between 1 and 65535")
 
         url = self.preview_urls.get(port)
         if url is None:
@@ -498,9 +488,7 @@ class Sandbox:
                 try:
                     resp = await client.delete(url, headers=headers)
                 except httpx.HTTPError as exc:
-                    raise SandboxClientError(
-                        f"Could not destroy sandbox '{self.id}': {exc}"
-                    ) from exc
+                    raise SandboxClientError(f"Could not destroy sandbox '{self.id}': {exc}") from exc
 
             if not resp.is_success:
                 msg = resp.text

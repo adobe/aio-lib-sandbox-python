@@ -20,8 +20,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: ruff check .
-      - run: pytest
+      - run: hatch run lint
+      - run: hatch run unit-tests
       - name: upload coverage
         if: success() && matrix.python-version == '3.12' && github.actor != 'dependabot[bot]'
         uses: codecov/codecov-action@v4
