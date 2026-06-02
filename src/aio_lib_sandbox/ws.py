@@ -19,7 +19,6 @@ from typing import Any, Callable
 
 import websockets
 
-from .frames import is_auth_ack, parse_frame
 from .errors import (
     SandboxClientError,
     SandboxCommandNotFoundError,
@@ -27,6 +26,7 @@ from .errors import (
     SandboxUnauthorizedError,
     SandboxWebSocketError,
 )
+from .frames import is_auth_ack, parse_frame
 from .types import DetachedCommandHandle, ExecResult, FileEntry, WriteResult
 
 logger = logging.getLogger("aio_lib_sandbox")
@@ -47,7 +47,7 @@ class PendingExec:
     timeout_handle: asyncio.TimerHandle | None = None
     # Detached-process fields
     detached: bool = False
-    resolved: bool = False          # True once the outer future has been set (exec.detached)
+    resolved: bool = False  # True once the outer future has been set (exec.detached)
     wait_future: asyncio.Future[Any] | None = None  # resolves on exec.exit for detached
 
 
@@ -121,9 +121,7 @@ class WsSession:
                 ssl=ssl_ctx,
             )
         except Exception as exc:
-            raise SandboxWebSocketError(
-                f"Could not connect sandbox '{self.id}': {exc}"
-            ) from exc
+            raise SandboxWebSocketError(f"Could not connect sandbox '{self.id}': {exc}") from exc
 
         self.ws = ws
         await self.authenticate()
@@ -134,9 +132,7 @@ class WsSession:
         raw = await self.ws.recv()
         frame = parse_frame(raw)
         if not is_auth_ack(frame, self.id):
-            raise SandboxUnauthorizedError(
-                f"Sandbox '{self.id}' rejected the WebSocket authentication token"
-            )
+            raise SandboxUnauthorizedError(f"Sandbox '{self.id}' rejected the WebSocket authentication token")
 
     async def send_frame(self, frame: dict[str, Any]) -> None:
         """Serialise ``frame`` and send it over the socket."""
@@ -183,9 +179,7 @@ class WsSession:
     def register_get_op(self, exec_id: str, pending: PendingGetOp) -> None:
         self.pending_get_ops[exec_id] = pending
 
-    def reject_pending(
-        self, store: dict[str, Any], exec_id: str, error: Exception
-    ) -> None:
+    def reject_pending(self, store: dict[str, Any], exec_id: str, error: Exception) -> None:
         pending = store.pop(exec_id, None)
         if pending is None:
             return
@@ -231,9 +225,7 @@ class WsSession:
         if pending.detached:
             if not pending.future.done():
                 pending.resolved = True
-                pending.future.set_result(
-                    {"pid": None, "started_at": None, "destroyed": True}
-                )
+                pending.future.set_result({"pid": None, "started_at": None, "destroyed": True})
             if pending.wait_future and not pending.wait_future.done():
                 pending.wait_future.set_result(wait_result)
             return
@@ -277,9 +269,7 @@ class WsSession:
         self.reject_pending(
             self.pending_execs,
             exec_id,
-            SandboxTimeoutError(
-                f"Command '{command}' exceeded timeout of {timeout}ms"
-            ),
+            SandboxTimeoutError(f"Command '{command}' exceeded timeout of {timeout}ms"),
         )
 
     # ------------------------------------------------------------------
@@ -297,9 +287,7 @@ class WsSession:
 
                 # exec.info is always routed to pending_get_ops.
                 # Error frames for pending get ops also go there (before exec map check).
-                if ftype == "exec.info" or (
-                    ftype == "error" and exec_id in self.pending_get_ops
-                ):
+                if ftype == "exec.info" or (ftype == "error" and exec_id in self.pending_get_ops):
                     self.handle_get_frame(frame)
                 elif exec_id in self.pending_file_ops:
                     self.handle_file_frame(frame)
@@ -310,11 +298,7 @@ class WsSession:
                 self.resolve_all_on_intentional_close()
                 return
             close_code = exc.rcvd.code if exc.rcvd is not None else 1006
-            self.reject_all(
-                SandboxWebSocketError(
-                    f"Sandbox '{self.id}' WebSocket closed with code {close_code}"
-                )
-            )
+            self.reject_all(SandboxWebSocketError(f"Sandbox '{self.id}' WebSocket closed with code {close_code}"))
         finally:
             self.ws = None
             if self.intentional_close:
@@ -409,19 +393,14 @@ class WsSession:
                 )
 
         elif ftype == "file.entries":
-            entries = [
-                FileEntry(name=e["name"], type=e["type"], size=e.get("size"))
-                for e in frame.get("entries", [])
-            ]
+            entries = [FileEntry(name=e["name"], type=e["type"], size=e.get("size")) for e in frame.get("entries", [])]
             self.resolve_file_op(exec_id, entries)
 
         elif ftype == "error":
             self.reject_pending(
                 self.pending_file_ops,
                 exec_id,
-                SandboxClientError(
-                    frame.get("message", f"File operation '{exec_id}' failed")
-                ),
+                SandboxClientError(frame.get("message", f"File operation '{exec_id}' failed")),
             )
 
     # ------------------------------------------------------------------
@@ -460,9 +439,7 @@ class WsSession:
         self.pending_get_ops.pop(exec_id, None)
         if not pending.future.done():
             pending.future.set_exception(
-                SandboxCommandNotFoundError(
-                    frame.get("message", f"No running process for execId '{exec_id}'")
-                )
+                SandboxCommandNotFoundError(frame.get("message", f"No running process for execId '{exec_id}'"))
             )
 
     def resolve_exec_entry(self, frame: dict[str, Any], pending: PendingGetOp) -> "asyncio.Future[Any]":
@@ -485,10 +462,12 @@ class WsSession:
         if not on_output:
             return
         prev = existing.on_output
+
         def merged(data: str, stream: str, _prev=prev, _new=on_output) -> None:
             if _prev:
                 _prev(data, stream)
             _new(data, stream)
+
         existing.on_output = merged
 
     def register_reattached_exec(

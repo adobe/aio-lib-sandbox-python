@@ -32,8 +32,8 @@ from aio_lib_sandbox.errors import (
     SandboxWebSocketError,
 )
 from aio_lib_sandbox.frames import normalize_size
-from aio_lib_sandbox.ws import PendingExec, PendingFileOp, PendingGetOp, WsSession
 from aio_lib_sandbox.sandbox import _parse_preview_urls
+from aio_lib_sandbox.ws import PendingExec, PendingFileOp, PendingGetOp, WsSession
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -153,9 +153,7 @@ class TestResolveCredentials:
         assert creds["api_key"] == "explicit-key"
 
     def test_prepends_https(self):
-        creds = Sandbox.resolve_credentials(
-            api_host="host.example.net", namespace="ns", auth="key"
-        )
+        creds = Sandbox.resolve_credentials(api_host="host.example.net", namespace="ns", auth="key")
         assert creds["api_host"] == "https://host.example.net"
 
     def test_missing_credentials_raise(self):
@@ -198,8 +196,10 @@ class TestSandboxCreate:
             },
         }
 
-        with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req, \
-             patch.object(Sandbox, "connect", new=AsyncMock()) as mock_connect:
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req,
+            patch.object(Sandbox, "connect", new=AsyncMock()) as mock_connect,
+        ):
             sandbox = await Sandbox.create(
                 name="my-sandbox",
                 api_host="https://runtime.example.net",
@@ -226,8 +226,10 @@ class TestSandboxCreate:
             "maxLifetime": 3600,
         }
 
-        with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req, \
-             patch.object(Sandbox, "connect", new=AsyncMock()):
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req,
+            patch.object(Sandbox, "connect", new=AsyncMock()),
+        ):
             await Sandbox.create(
                 name="policy-sb",
                 api_host="https://runtime.example.net",
@@ -253,8 +255,10 @@ class TestSandboxCreate:
             "maxLifetime": 3600,
         }
 
-        with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)), \
-             patch.object(Sandbox, "connect", new=AsyncMock()):
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)),
+            patch.object(Sandbox, "connect", new=AsyncMock()),
+        ):
             sandbox = await Sandbox.create(name="env-sandbox")
 
         assert sandbox.id == "sb-env"
@@ -273,8 +277,10 @@ class TestSandboxCreate:
             "maxLifetime": 3600,
         }
 
-        with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)), \
-             patch.object(Sandbox, "connect", new=AsyncMock()):
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)),
+            patch.object(Sandbox, "connect", new=AsyncMock()),
+        ):
             sandbox = await Sandbox.create(
                 name="no-endpoint",
                 api_host="https://runtime.example.net",
@@ -300,8 +306,10 @@ class TestSandboxCreate:
             },
         }
 
-        with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req, \
-             patch.object(Sandbox, "connect", new=AsyncMock()):
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req,
+            patch.object(Sandbox, "connect", new=AsyncMock()),
+        ):
             sandbox = await Sandbox.create(
                 name="ports-sandbox",
                 api_host="https://runtime.example.net",
@@ -338,9 +346,11 @@ class TestWebSocketConnection:
         async def noop_listen():
             return None
 
-        with patch("aio_lib_sandbox.ws.websockets.connect", new=AsyncMock(return_value=ws)) as connect, \
-             patch.object(session, "authenticate", new=AsyncMock()) as authenticate, \
-             patch.object(session, "listen", new=noop_listen):
+        with (
+            patch("aio_lib_sandbox.ws.websockets.connect", new=AsyncMock(return_value=ws)) as connect,
+            patch.object(session, "authenticate", new=AsyncMock()) as authenticate,
+            patch.object(session, "listen", new=noop_listen),
+        ):
             await session.connect()
             await session.listener_task
 
@@ -391,9 +401,7 @@ class TestWebSocketConnection:
         with pytest.raises(SandboxUnauthorizedError, match="rejected"):
             await session.authenticate()
 
-        session.ws.send.assert_awaited_once_with(
-            json.dumps({"type": "auth", "token": "tok-abc"})
-        )
+        session.ws.send.assert_awaited_once_with(json.dumps({"type": "auth", "token": "tok-abc"}))
 
     def test_ensure_open_raises_when_socket_missing(self):
         session = WsSession(
@@ -419,30 +427,18 @@ class TestWebSocketConnection:
             json.dumps({"type": "file.content", "execId": "file-1"}),
             json.dumps({"type": "exec.output", "execId": "exec-1"}),
         )
-        session.pending_get_ops["get-1"] = PendingGetOp(
-            future=asyncio.get_running_loop().create_future()
-        )
-        session.pending_file_ops["file-1"] = PendingFileOp(
-            future=asyncio.get_running_loop().create_future()
-        )
-        session.pending_execs["exec-1"] = PendingExec(
-            future=asyncio.get_running_loop().create_future()
-        )
+        session.pending_get_ops["get-1"] = PendingGetOp(future=asyncio.get_running_loop().create_future())
+        session.pending_file_ops["file-1"] = PendingFileOp(future=asyncio.get_running_loop().create_future())
+        session.pending_execs["exec-1"] = PendingExec(future=asyncio.get_running_loop().create_future())
         session.handle_get_frame = MagicMock()
         session.handle_file_frame = MagicMock()
         session.handle_exec_frame = MagicMock()
 
         await session.listen()
 
-        session.handle_get_frame.assert_called_once_with(
-            {"type": "exec.info", "execId": "get-1"}
-        )
-        session.handle_file_frame.assert_called_once_with(
-            {"type": "file.content", "execId": "file-1"}
-        )
-        session.handle_exec_frame.assert_called_once_with(
-            {"type": "exec.output", "execId": "exec-1"}
-        )
+        session.handle_get_frame.assert_called_once_with({"type": "exec.info", "execId": "get-1"})
+        session.handle_file_frame.assert_called_once_with({"type": "file.content", "execId": "file-1"})
+        session.handle_exec_frame.assert_called_once_with({"type": "exec.output", "execId": "exec-1"})
         assert session.ws is None
 
     @pytest.mark.asyncio
@@ -564,9 +560,7 @@ class TestExec:
         sandbox.session.handle_exec_frame(
             {"type": "exec.output", "execId": exec_id, "stream": "stdout", "data": "hello\n"}
         )
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.exit", "execId": exec_id, "exitCode": 0}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.exit", "execId": exec_id, "exitCode": 0})
 
         result = await task
         assert result.stdout == "hello\n"
@@ -600,12 +594,8 @@ class TestExec:
         exec_id = task.exec_id
 
         await asyncio.sleep(0)
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.output", "execId": exec_id, "stream": "stdout", "data": "a"}
-        )
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.output", "execId": exec_id, "stream": "stderr", "data": "b"}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.output", "execId": exec_id, "stream": "stdout", "data": "a"})
+        sandbox.session.handle_exec_frame({"type": "exec.output", "execId": exec_id, "stream": "stderr", "data": "b"})
         sandbox.session.handle_exec_frame({"type": "exec.exit", "execId": exec_id, "exitCode": 0})
 
         await task
@@ -636,9 +626,7 @@ class TestExec:
         exec_id = task.exec_id
 
         await asyncio.sleep(0)
-        sandbox.session.handle_exec_frame(
-            {"type": "error", "execId": exec_id, "message": "command not found"}
-        )
+        sandbox.session.handle_exec_frame({"type": "error", "execId": exec_id, "message": "command not found"})
 
         with pytest.raises(SandboxClientError, match="command not found"):
             await task
@@ -652,9 +640,7 @@ class TestExec:
         sandbox = _make_sandbox()
         _inject_ws(sandbox)
 
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.output", "execId": "exec-missing", "data": "ignored"}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.output", "execId": "exec-missing", "data": "ignored"})
 
 
 # ---------------------------------------------------------------------------
@@ -742,9 +728,7 @@ class TestFileOps:
             {"name": "hello.js", "type": "file", "size": 42},
             {"name": "src", "type": "directory"},
         ]
-        sandbox.session.handle_file_frame(
-            {"type": "file.entries", "execId": exec_id, "entries": entries}
-        )
+        sandbox.session.handle_file_frame({"type": "file.entries", "execId": exec_id, "entries": entries})
 
         result = await future
         assert len(result) == 2
@@ -770,9 +754,7 @@ class TestFileOps:
         sandbox = _make_sandbox()
         _inject_ws(sandbox)
 
-        sandbox.session.handle_file_frame(
-            {"type": "file.content", "execId": "file-missing", "content": "ignored"}
-        )
+        sandbox.session.handle_file_frame({"type": "file.content", "execId": "file-missing", "content": "ignored"})
 
     @pytest.mark.asyncio
     async def test_file_error_frame_rejects_pending_operation(self):
@@ -781,9 +763,7 @@ class TestFileOps:
         future = asyncio.get_running_loop().create_future()
         sandbox.session.pending_file_ops["file-err"] = PendingFileOp(future=future)
 
-        sandbox.session.handle_file_frame(
-            {"type": "error", "execId": "file-err", "message": "read failed"}
-        )
+        sandbox.session.handle_file_frame({"type": "error", "execId": "file-err", "message": "read failed"})
 
         with pytest.raises(SandboxClientError, match="read failed"):
             await future
@@ -1165,8 +1145,10 @@ class TestBuildCreateBodyPolicy:
                 "maxLifetime": 3600,
             }
 
-        with patch("aio_lib_sandbox.sandbox.api_request", new=_mock_req), \
-             patch.object(Sandbox, "connect", new=AsyncMock()):
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=_mock_req),
+            patch.object(Sandbox, "connect", new=AsyncMock()),
+        ):
             await Sandbox.create(
                 name="sb",
                 api_host="https://runtime.example.net",
@@ -1191,8 +1173,10 @@ class TestBuildCreateBodyPolicy:
                 "maxLifetime": 3600,
             }
 
-        with patch("aio_lib_sandbox.sandbox.api_request", new=_mock_req), \
-             patch.object(Sandbox, "connect", new=AsyncMock()):
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=_mock_req),
+            patch.object(Sandbox, "connect", new=AsyncMock()),
+        ):
             await Sandbox.create(
                 name="sb",
                 api_host="https://runtime.example.net",
@@ -1206,6 +1190,7 @@ class TestBuildCreateBodyPolicy:
 # ---------------------------------------------------------------------------
 # Detached exec
 # ---------------------------------------------------------------------------
+
 
 class TestDetachedExec:
     @pytest.mark.asyncio
@@ -1240,16 +1225,12 @@ class TestDetachedExec:
         exec_id = task.exec_id
 
         await asyncio.sleep(0)
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.detached", "execId": exec_id, "pid": 1234, "startedAt": 1000}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.detached", "execId": exec_id, "pid": 1234, "startedAt": 1000})
 
         handle = await task
 
         wait_coro = handle.wait()
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.exit", "execId": exec_id, "exitCode": 0}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.exit", "execId": exec_id, "exitCode": 0})
 
         result = await wait_coro
         assert result["exit_code"] == 0
@@ -1265,9 +1246,7 @@ class TestDetachedExec:
         exec_id = task.exec_id
 
         await asyncio.sleep(0)
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.detached", "execId": exec_id, "pid": 9000, "startedAt": 1}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.detached", "execId": exec_id, "pid": 9000, "startedAt": 1})
         await task
 
         sandbox.session.handle_exec_frame(
@@ -1285,15 +1264,11 @@ class TestDetachedExec:
         exec_id = task.exec_id
 
         await asyncio.sleep(0)
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.detached", "execId": exec_id, "pid": 1, "startedAt": 1}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.detached", "execId": exec_id, "pid": 1, "startedAt": 1})
         handle = await task
 
         wait_coro = handle.wait()
-        sandbox.session.handle_exec_frame(
-            {"type": "error", "execId": exec_id, "message": "process crashed"}
-        )
+        sandbox.session.handle_exec_frame({"type": "error", "execId": exec_id, "message": "process crashed"})
 
         with pytest.raises(SandboxClientError, match="process crashed"):
             await wait_coro
@@ -1344,9 +1319,7 @@ class TestDetachedExec:
             wait_future=wait_future,
         )
 
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.detached", "execId": "exec-1", "pid": 1234, "startedAt": 100}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.detached", "execId": "exec-1", "pid": 1234, "startedAt": 100})
 
         timeout_handle.cancel.assert_called_once()
         assert sandbox.session.pending_execs["exec-1"].timeout_handle is None
@@ -1362,9 +1335,7 @@ class TestDetachedExec:
             timeout_handle=timeout_handle,
         )
 
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.exit", "execId": "exec-1", "exitCode": 0}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.exit", "execId": "exec-1", "exitCode": 0})
 
         timeout_handle.cancel.assert_called_once()
         assert (await future).exit_code == 0
@@ -1373,6 +1344,7 @@ class TestDetachedExec:
 # ---------------------------------------------------------------------------
 # get_command
 # ---------------------------------------------------------------------------
+
 
 class TestGetCommand:
     @pytest.mark.asyncio
@@ -1387,14 +1359,16 @@ class TestGetCommand:
 
         await asyncio.sleep(0)
 
-        sandbox.session.handle_get_frame({
-            "type": "exec.info",
-            "execId": "exec-d1e2f3a4",
-            "command": "npm run dev",
-            "pid": 5678,
-            "startedAt": 1711036812,
-            "detached": True,
-        })
+        sandbox.session.handle_get_frame(
+            {
+                "type": "exec.info",
+                "execId": "exec-d1e2f3a4",
+                "command": "npm run dev",
+                "pid": 5678,
+                "startedAt": 1711036812,
+                "detached": True,
+            }
+        )
 
         handle = await task
         assert isinstance(handle, DetachedCommandHandle)
@@ -1414,21 +1388,21 @@ class TestGetCommand:
         get_task = loop.create_task(coro)
 
         await asyncio.sleep(0)
-        sandbox.session.handle_get_frame({
-            "type": "exec.info",
-            "execId": "exec-reattach",
-            "command": "sleep 60",
-            "pid": 1111,
-            "startedAt": 100,
-            "detached": True,
-        })
+        sandbox.session.handle_get_frame(
+            {
+                "type": "exec.info",
+                "execId": "exec-reattach",
+                "command": "sleep 60",
+                "pid": 1111,
+                "startedAt": 100,
+                "detached": True,
+            }
+        )
 
         handle = await get_task
         wait_coro = handle.wait()
 
-        sandbox.session.handle_exec_frame(
-            {"type": "exec.exit", "execId": "exec-reattach", "exitCode": 143}
-        )
+        sandbox.session.handle_exec_frame({"type": "exec.exit", "execId": "exec-reattach", "exitCode": 143})
 
         result = await wait_coro
         assert result["exit_code"] == 143
@@ -1444,12 +1418,14 @@ class TestGetCommand:
         get_task = loop.create_task(coro)
 
         await asyncio.sleep(0)
-        sandbox.session.handle_get_frame({
-            "type": "error",
-            "execId": "exec-gone",
-            "code": "NOT_FOUND",
-            "message": "no running process for execId",
-        })
+        sandbox.session.handle_get_frame(
+            {
+                "type": "error",
+                "execId": "exec-gone",
+                "code": "NOT_FOUND",
+                "message": "no running process for execId",
+            }
+        )
 
         with pytest.raises(SandboxCommandNotFoundError):
             await get_task
@@ -1480,14 +1456,16 @@ class TestGetCommand:
             )
         )
         await asyncio.sleep(0)
-        sandbox.session.handle_get_frame({
-            "type": "exec.info",
-            "execId": task.exec_id,
-            "command": "npm run dev",
-            "pid": 1234,
-            "startedAt": 100,
-            "detached": True,
-        })
+        sandbox.session.handle_get_frame(
+            {
+                "type": "exec.info",
+                "execId": task.exec_id,
+                "command": "npm run dev",
+                "pid": 1234,
+                "startedAt": 100,
+                "detached": True,
+            }
+        )
         reattached_handle = await get_task
 
         assert reattached_handle._wait_future is original_handle._wait_future
@@ -1516,13 +1494,13 @@ class TestGetCommand:
         sandbox = _make_sandbox()
         _inject_ws(sandbox)
 
-        sandbox.session.handle_get_frame(
-            {"type": "exec.info", "execId": "exec-missing"}
-        )
+        sandbox.session.handle_get_frame({"type": "exec.info", "execId": "exec-missing"})
+
 
 # ---------------------------------------------------------------------------
 # _parse_preview_urls
 # ---------------------------------------------------------------------------
+
 
 class TestParsePreviewUrls:
     def test_returns_empty_for_non_dict(self):
@@ -1545,8 +1523,11 @@ class TestParsePreviewUrls:
         assert result == {3000: "https://sb-3000.example.net"}
 
     def test_skips_out_of_range_ports(self):
-        raw = {"0": "https://zero.example.net", "65536": "https://toobig.example.net",
-               "3000": "https://sb-3000.example.net"}
+        raw = {
+            "0": "https://zero.example.net",
+            "65536": "https://toobig.example.net",
+            "3000": "https://sb-3000.example.net",
+        }
         result = _parse_preview_urls(raw)
         assert result == {3000: "https://sb-3000.example.net"}
 

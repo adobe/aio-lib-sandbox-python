@@ -14,4 +14,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: pytest
+      - run: hatch run test

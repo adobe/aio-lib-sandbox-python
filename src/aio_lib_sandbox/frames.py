@@ -24,9 +24,7 @@ def is_auth_ack(frame: dict[str, Any] | None, sandbox_id: str) -> bool:
     """Return True if the frame is a successful auth acknowledgement for this sandbox."""
     if frame is None:
         return False
-    return frame.get("type") == "auth.ok" and (
-        not frame.get("sandboxId") or frame["sandboxId"] == sandbox_id
-    )
+    return frame.get("type") == "auth.ok" and (not frame.get("sandboxId") or frame["sandboxId"] == sandbox_id)
 
 
 def normalize_size(size: str | dict[str, Any] | None) -> str:

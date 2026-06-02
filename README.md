@@ -218,3 +218,24 @@ sandbox = await Sandbox.create(
     },
 )
 ```
+
+## Development
+
+Install development dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+To run the same checks used by CI:
+
+```bash
+hatch run test
+```
+
+Linting is powered by Ruff:
+
+```bash
+hatch run lint
+hatch run lint-fix
+```
