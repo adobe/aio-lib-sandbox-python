@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0a1"
+__version__ = "0.1.0a5"
 
 from .errors import (
     SandboxClientError,
