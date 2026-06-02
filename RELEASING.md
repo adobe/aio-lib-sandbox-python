@@ -33,7 +33,7 @@ pip install hatch
    pytest
    ```
 
-2. **Bump the version** in `pyproject.toml` using `hatch`:
+2. **Bump the version** using `hatch`:
 
    Or set a specific version directly:
 
@@ -41,7 +41,7 @@ pip install hatch
    hatch version 0.1.0a1
    ```
 
-   > This edits `pyproject.toml` in place. Verify the new version with `hatch version`.
+   > This edits `src/aio_lib_sandbox/__init__.py` in place because `pyproject.toml` uses Hatch's dynamic version path. Verify the new version with `hatch version`.
 
 3. **Do a dry-run build** to catch any packaging issues before committing:
 
@@ -54,7 +54,7 @@ pip install hatch
 4. **Commit and tag** the version bump:
 
    ```bash
-   git add pyproject.toml
+   git add src/aio_lib_sandbox/__init__.py
    git commit -m "chore: release v$(hatch version)"
    git tag "v$(hatch version)"
    ```
@@ -66,7 +66,7 @@ pip install hatch
    git push origin "v$(hatch version)"
    ```
 
-6. **CI publishes to PyPI automatically.** The `on-push-publish-to-pypi` workflow triggers because `pyproject.toml` changed on `main`. Monitor progress in the [Actions tab](https://github.com/adobe/aio-lib-sandbox-python/actions).
+6. **CI publishes to PyPI automatically.** The `on-push-publish-to-pypi` workflow triggers because `src/aio_lib_sandbox/__init__.py` changed on `main`. Monitor progress in the [Actions tab](https://github.com/adobe/aio-lib-sandbox-python/actions).
 
 7. **Verify the release** appeared on PyPI:
 

@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - "pyproject.toml"
+      - "src/aio_lib_sandbox/__init__.py"
 
 jobs:
   publish:
