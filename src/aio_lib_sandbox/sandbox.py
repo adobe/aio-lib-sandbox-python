@@ -150,7 +150,7 @@ class Sandbox:
         if ports is not None:
             body["ports"] = ports
 
-        url = f"{creds['api_host']}/api/v1/namespaces/{creds['namespace']}/sandbox"
+        url = f"{creds['api_host']}/api/v1/namespaces/{creds['namespace']}/sandboxes"
         payload = await api_request(
             "POST",
             url,
@@ -211,7 +211,7 @@ class Sandbox:
             This instance is **not** WebSocket-connected.
         """
         creds = cls.resolve_credentials(api_host=api_host, namespace=namespace, auth=auth)
-        url = f"{creds['api_host']}/api/v1/namespaces/{creds['namespace']}/sandbox/{sandbox_id}"
+        url = f"{creds['api_host']}/api/v1/namespaces/{creds['namespace']}/sandboxes/{sandbox_id}"
         payload = await api_request(
             "GET",
             url,
@@ -488,7 +488,7 @@ class Sandbox:
             The destroy response payload.
         """
         base = self.management_endpoint or self.api_host
-        url = f"{base}/api/v1/namespaces/{self.namespace}/sandbox/{self.id}"
+        url = f"{base}/api/v1/namespaces/{self.namespace}/sandboxes/{self.id}"
         headers = {"Authorization": build_auth_header(self.api_key)}
         if self.session:
             self.session.begin_intentional_close()
