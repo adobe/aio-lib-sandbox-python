@@ -41,7 +41,7 @@ from aio_lib_sandbox.ws import PendingExec, PendingFileOp, PendingGetOp, WsSessi
 
 BASE_OPTS = dict(
     sandbox_id="sb-test",
-    endpoint="wss://runtime.example.net/ws/v1/namespaces/ns/sandbox/sb-test/exec",
+    endpoint="wss://runtime.example.net/api/v1/namespaces/ns/sandboxes/sb-test/exec",
     status="ready",
     namespace="ns",
     api_host="https://runtime.example.net",
@@ -187,7 +187,7 @@ class TestSandboxCreate:
     async def test_create_calls_api_and_connects(self, monkeypatch):
         payload = {
             "sandboxId": "sb-new",
-            "wsEndpoint": "wss://runtime.example.net/ws/v1/namespaces/ns/sandbox/sb-new/exec",
+            "wsEndpoint": "wss://runtime.example.net/api/v1/namespaces/ns/sandboxes/sb-new/exec",
             "status": "ready",
             "token": "tok-new",
             "maxLifetime": 3600,
@@ -220,7 +220,7 @@ class TestSandboxCreate:
         policy = {"network": {"egress": [{"host": "api.github.com", "port": 443}]}}
         payload = {
             "sandboxId": "sb-pol",
-            "wsEndpoint": "wss://runtime.example.net/ws/v1/namespaces/ns/sandbox/sb-pol/exec",
+            "wsEndpoint": "wss://runtime.example.net/api/v1/namespaces/ns/sandboxes/sb-pol/exec",
             "status": "ready",
             "token": "tok-pol",
             "maxLifetime": 3600,
@@ -249,7 +249,7 @@ class TestSandboxCreate:
 
         payload = {
             "sandboxId": "sb-env",
-            "wsEndpoint": "wss://runtime.example.net/ws/v1/namespaces/ns/sandbox/sb-env/exec",
+            "wsEndpoint": "wss://runtime.example.net/api/v1/namespaces/ns/sandboxes/sb-env/exec",
             "status": "ready",
             "token": "tok-env",
             "maxLifetime": 3600,
@@ -296,7 +296,7 @@ class TestSandboxCreate:
     async def test_create_forwards_ports_and_parses_preview_urls(self):
         payload = {
             "sandboxId": "sb-ports",
-            "wsEndpoint": "wss://runtime.example.net/ws/v1/namespaces/ns/sandbox/sb-ports/exec",
+            "wsEndpoint": "wss://runtime.example.net/api/v1/namespaces/ns/sandboxes/sb-ports/exec",
             "status": "ready",
             "token": "tok-ports",
             "maxLifetime": 3600,
