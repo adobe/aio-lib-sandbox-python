@@ -72,11 +72,18 @@ from aio_lib_sandbox import Sandbox
 sandbox = await Sandbox.create(
     name="my-sandbox",
     type="cpu:default",
+    idle_timeout=900,
     max_lifetime=3600,
     ports=[3000, 8080],
     envs={"API_KEY": "your-api-key"},
 )
 ```
+
+#### Sandbox lifetime model
+
+A sandbox is always deleted when `max_lifetime` has elapsed. It will also be deleted after the `idle_timeout` has elapsed, if there has been no activity.
+
+To keep a sandbox alive, send at least one command or check the status every `idle_timeout` seconds.
 
 ### Get Status
 
