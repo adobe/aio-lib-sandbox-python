@@ -326,6 +326,83 @@ class TestSandboxCreate:
         }
         assert sandbox.get_url(3000) == "https://sb-ports-3000.preview.example.net"
 
+    @pytest.mark.asyncio
+    async def test_create_sends_default_idle_timeout_and_max_lifetime(self):
+        payload = {
+            "sandboxId": "sb-defaults",
+            "wsEndpoint": "wss://runtime.example.net/api/v1/namespaces/ns/sandboxes/sb-defaults/exec",
+            "status": "ready",
+            "token": "tok-defaults",
+            "idleTimeout": 900,
+            "maxLifetime": 3600,
+        }
+
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req,
+            patch.object(Sandbox, "connect", new=AsyncMock()),
+        ):
+            await Sandbox.create(
+                name="defaults-sandbox",
+                api_host="https://runtime.example.net",
+                namespace="ns",
+                auth="uuid:key",
+            )
+
+        _, kwargs = mock_req.call_args
+        assert kwargs["body"]["idleTimeout"] == 900
+        assert kwargs["body"]["maxLifetime"] == 3600
+
+    @pytest.mark.asyncio
+    async def test_create_forwards_explicit_idle_timeout(self):
+        payload = {
+            "sandboxId": "sb-idle",
+            "wsEndpoint": "wss://runtime.example.net/api/v1/namespaces/ns/sandboxes/sb-idle/exec",
+            "status": "ready",
+            "token": "tok-idle",
+            "idleTimeout": 1800,
+            "maxLifetime": 3600,
+        }
+
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req,
+            patch.object(Sandbox, "connect", new=AsyncMock()),
+        ):
+            await Sandbox.create(
+                name="idle-sandbox",
+                api_host="https://runtime.example.net",
+                namespace="ns",
+                auth="uuid:key",
+                idle_timeout=1800,
+            )
+
+        _, kwargs = mock_req.call_args
+        assert kwargs["body"]["idleTimeout"] == 1800
+
+    @pytest.mark.asyncio
+    async def test_create_stores_idle_timeout_from_response(self):
+        payload = {
+            "sandboxId": "sb-store",
+            "wsEndpoint": "wss://runtime.example.net/api/v1/namespaces/ns/sandboxes/sb-store/exec",
+            "status": "ready",
+            "token": "tok-store",
+            "idleTimeout": 1800,
+            "maxLifetime": 3600,
+        }
+
+        with (
+            patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)),
+            patch.object(Sandbox, "connect", new=AsyncMock()),
+        ):
+            sandbox = await Sandbox.create(
+                name="store-sandbox",
+                api_host="https://runtime.example.net",
+                namespace="ns",
+                auth="uuid:key",
+                idle_timeout=1800,
+            )
+
+        assert sandbox.idle_timeout == 1800
+
 
 # ---------------------------------------------------------------------------
 # WebSocket connection
@@ -531,6 +608,43 @@ class TestSandboxGet:
 
         assert sandbox.preview_urls == {3000: "https://sb-get-3000.preview.example.net"}
         assert sandbox.get_url(3000) == "https://sb-get-3000.preview.example.net"
+
+    @pytest.mark.asyncio
+    async def test_get_stores_idle_timeout_from_response(self):
+        payload = {
+            "sandboxId": "sb-get-idle",
+            "status": "running",
+            "idleTimeout": 1200,
+            "maxLifetime": 3600,
+        }
+
+        with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)):
+            sandbox = await Sandbox.get(
+                "sb-get-idle",
+                api_host="https://runtime.example.net",
+                namespace="ns",
+                auth="uuid:key",
+            )
+
+        assert sandbox.idle_timeout == 1200
+
+    @pytest.mark.asyncio
+    async def test_get_routes_through_management_endpoint(self):
+        payload = {"sandboxId": "sb-mgmt", "status": "running"}
+
+        with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)) as mock_req:
+            sandbox = await Sandbox.get(
+                "sb-mgmt",
+                api_host="https://runtime.example.net",
+                namespace="ns",
+                auth="uuid:key",
+                management_endpoint="https://sb-mgmt.mgmt.example.net",
+            )
+
+        args, _ = mock_req.call_args
+        # api_request is called positionally: (method, url, ...)
+        assert args[1] == "https://sb-mgmt.mgmt.example.net/api/v1/namespaces/ns/sandboxes/sb-mgmt"
+        assert sandbox.management_endpoint == "https://sb-mgmt.mgmt.example.net"
 
     @pytest.mark.asyncio
     async def test_get_not_found_raises(self):
