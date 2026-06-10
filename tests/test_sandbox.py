@@ -11,8 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 import websockets
+from websockets.frames import Close
 
 from aio_lib_sandbox import (
+    SANDBOX_PROTOCOL_VERSION,
     SANDBOX_SIZES,
     DetachedCommandHandle,
     ExecResult,
@@ -21,6 +23,7 @@ from aio_lib_sandbox import (
     WriteResult,
 )
 from aio_lib_sandbox.errors import (
+    ProtocolVersionMismatchError,
     SandboxClientError,
     SandboxCommandNotFoundError,
     SandboxInitializationError,
@@ -177,6 +180,12 @@ class TestSandboxSizes:
         assert Sandbox.sizes is SANDBOX_SIZES
 
 
+class TestProtocolVersion:
+    def test_protocol_major_is_bundled(self):
+        assert SANDBOX_PROTOCOL_VERSION == "1"
+        assert Sandbox.protocol_version == "1"
+
+
 # ---------------------------------------------------------------------------
 # Sandbox.create()
 # ---------------------------------------------------------------------------
@@ -191,6 +200,7 @@ class TestSandboxCreate:
             "status": "ready",
             "token": "tok-new",
             "maxLifetime": 3600,
+            "protocolVersion": "1",
             "previewUrls": {
                 "3000": "https://sb-new-3000.preview.example.net",
             },
@@ -209,6 +219,7 @@ class TestSandboxCreate:
 
         assert sandbox.id == "sb-new"
         assert sandbox.status == "ready"
+        assert sandbox.protocol_version == "1"
         assert sandbox.preview_urls == {
             3000: "https://sb-new-3000.preview.example.net",
         }
@@ -459,6 +470,23 @@ class TestWebSocketConnection:
         assert session.ws is None
 
     @pytest.mark.asyncio
+    async def test_listen_rejects_protocol_mismatch_close_with_typed_error(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        future = asyncio.get_running_loop().create_future()
+        session.pending_execs["exec-1"] = PendingExec(future=future)
+        session.ws = _AsyncFrameStream(websockets.ConnectionClosedError(Close(4003, "protocol_version_mismatch"), None))
+
+        await session.listen()
+
+        with pytest.raises(ProtocolVersionMismatchError):
+            await future
+        assert session.ws is None
+
+    @pytest.mark.asyncio
     async def test_listen_resolves_pending_on_intentional_close(self):
         session = WsSession(
             sandbox_id="sb-test",
@@ -496,6 +524,7 @@ class TestSandboxGet:
             "status": "running",
             "cluster": "cluster-b",
             "region": "va6",
+            "protocolVersion": "1",
         }
 
         with patch("aio_lib_sandbox.sandbox.api_request", new=AsyncMock(return_value=payload)):
@@ -509,6 +538,7 @@ class TestSandboxGet:
         assert sandbox.id == "sb-get"
         assert sandbox.status == "running"
         assert sandbox.cluster == "cluster-b"
+        assert sandbox.protocol_version == "1"
         assert sandbox.session is None
 
     @pytest.mark.asyncio

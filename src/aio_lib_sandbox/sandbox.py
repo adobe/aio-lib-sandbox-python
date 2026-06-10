@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 import httpx
 
+from .constants import API_PREFIX, PROTOCOL_VERSION
 from .errors import (
     SandboxClientError,
     SandboxInitializationError,
@@ -44,6 +45,7 @@ class Sandbox:
     """
 
     sizes = SANDBOX_SIZES
+    protocol_version = PROTOCOL_VERSION
 
     def __init__(
         self,
@@ -60,6 +62,7 @@ class Sandbox:
         token: str | None = None,
         preview_urls: dict[int, str] | None = None,
         management_endpoint: str | None = None,
+        protocol_version: str | None = None,
         verify_ssl: bool = True,
     ) -> None:
         self.id = sandbox_id
@@ -75,6 +78,7 @@ class Sandbox:
         self.token = token
         self.preview_urls: dict[int, str] = preview_urls or {}
         self.management_endpoint = management_endpoint
+        self.protocol_version = protocol_version or PROTOCOL_VERSION
         self.verify_ssl = verify_ssl
 
         self.session: WsSession | None = None
@@ -150,7 +154,7 @@ class Sandbox:
         if ports is not None:
             body["ports"] = ports
 
-        url = f"{creds['api_host']}/api/v1/namespaces/{creds['namespace']}/sandboxes"
+        url = f"{creds['api_host']}{API_PREFIX}/namespaces/{creds['namespace']}/sandboxes"
         payload = await api_request(
             "POST",
             url,
@@ -173,6 +177,7 @@ class Sandbox:
             max_lifetime=payload.get("maxLifetime", 3600),
             preview_urls=_parse_preview_urls(payload.get("previewUrls")),
             management_endpoint=payload.get("managementEndpoint"),
+            protocol_version=payload.get("protocolVersion") or PROTOCOL_VERSION,
             namespace=creds["namespace"],
             api_host=creds["api_host"],
             api_key=creds["api_key"],
@@ -209,7 +214,7 @@ class Sandbox:
             This instance is **not** WebSocket-connected.
         """
         creds = cls.resolve_credentials(api_host=api_host, namespace=namespace, auth=auth)
-        url = f"{creds['api_host']}/api/v1/namespaces/{creds['namespace']}/sandboxes/{sandbox_id}"
+        url = f"{creds['api_host']}{API_PREFIX}/namespaces/{creds['namespace']}/sandboxes/{sandbox_id}"
         payload = await api_request(
             "GET",
             url,
@@ -226,6 +231,7 @@ class Sandbox:
             region=payload.get("region"),
             max_lifetime=payload.get("maxLifetime", 3600),
             preview_urls=_parse_preview_urls(payload.get("previewUrls")),
+            protocol_version=payload.get("protocolVersion") or PROTOCOL_VERSION,
             namespace=creds["namespace"],
             api_host=creds["api_host"],
             api_key=creds["api_key"],
@@ -478,7 +484,7 @@ class Sandbox:
             The destroy response payload.
         """
         base = self.management_endpoint or self.api_host
-        url = f"{base}/api/v1/namespaces/{self.namespace}/sandboxes/{self.id}"
+        url = f"{base}{API_PREFIX}/namespaces/{self.namespace}/sandboxes/{self.id}"
         headers = {"Authorization": build_auth_header(self.api_key)}
         if self.session:
             self.session.begin_intentional_close()

@@ -11,6 +11,7 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
+from .constants import API_PREFIX
 from .errors import (
     SandboxClientError,
     SandboxNotFoundError,
@@ -46,7 +47,7 @@ def normalize_api_host(host: str) -> str:
 def build_ws_endpoint(api_host: str, namespace: str, sandbox_id: str) -> str:
     parsed = urlparse(api_host)
     ws_scheme = "ws" if parsed.scheme == "http" else "wss"
-    path = f"/api/v1/namespaces/{namespace}/sandboxes/{sandbox_id}/exec"
+    path = f"{API_PREFIX}/namespaces/{namespace}/sandboxes/{sandbox_id}/exec"
     return urlunparse((ws_scheme, parsed.netloc, path, "", "", ""))
 
 

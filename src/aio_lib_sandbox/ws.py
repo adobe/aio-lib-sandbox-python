@@ -20,6 +20,7 @@ from typing import Any, Callable
 import websockets
 
 from .errors import (
+    ProtocolVersionMismatchError,
     SandboxClientError,
     SandboxCommandNotFoundError,
     SandboxTimeoutError,
@@ -298,7 +299,13 @@ class WsSession:
                 self.resolve_all_on_intentional_close()
                 return
             close_code = exc.rcvd.code if exc.rcvd is not None else 1006
-            self.reject_all(SandboxWebSocketError(f"Sandbox '{self.id}' WebSocket closed with code {close_code}"))
+            if close_code == 4003:
+                error = ProtocolVersionMismatchError(
+                    f"Sandbox '{self.id}' WebSocket protocol version does not match this SDK"
+                )
+            else:
+                error = SandboxWebSocketError(f"Sandbox '{self.id}' WebSocket closed with code {close_code}")
+            self.reject_all(error)
         finally:
             self.ws = None
             if self.intentional_close:

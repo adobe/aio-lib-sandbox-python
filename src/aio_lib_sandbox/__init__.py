@@ -7,7 +7,9 @@ from __future__ import annotations
 
 __version__ = "0.1.0a7"
 
+from .constants import PROTOCOL_VERSION
 from .errors import (
+    ProtocolVersionMismatchError,
     SandboxClientError,
     SandboxCommandNotFoundError,
     SandboxInitializationError,
@@ -35,6 +37,7 @@ from .types import (
 
 __all__ = [
     "Sandbox",
+    "SANDBOX_PROTOCOL_VERSION",
     "DetachedCommandHandle",
     "ExecResult",
     "ExecTask",
@@ -55,4 +58,7 @@ __all__ = [
     "SandboxTimeoutError",
     "SandboxWebSocketError",
     "SandboxCommandNotFoundError",
+    "ProtocolVersionMismatchError",
 ]
+
+SANDBOX_PROTOCOL_VERSION = PROTOCOL_VERSION
