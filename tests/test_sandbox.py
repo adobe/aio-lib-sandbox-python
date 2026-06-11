@@ -28,6 +28,7 @@ from aio_lib_sandbox.errors import (
     SandboxCommandNotFoundError,
     SandboxInitializationError,
     SandboxInvalidPortError,
+    SandboxMalformedFrameError,
     SandboxNotFoundError,
     SandboxPortNotProvisionedError,
     SandboxTimeoutError,
@@ -483,6 +484,23 @@ class TestWebSocketConnection:
         await session.listen()
 
         with pytest.raises(ProtocolVersionMismatchError):
+            await future
+        assert session.ws is None
+
+    @pytest.mark.asyncio
+    async def test_listen_rejects_malformed_frame_close_with_typed_error(self):
+        session = WsSession(
+            sandbox_id="sb-test",
+            endpoint="wss://runtime.example.net/ws",
+            token="tok-abc",
+        )
+        future = asyncio.get_running_loop().create_future()
+        session.pending_execs["exec-1"] = PendingExec(future=future)
+        session.ws = _AsyncFrameStream(websockets.ConnectionClosedError(Close(4004, "malformed_frame"), None))
+
+        await session.listen()
+
+        with pytest.raises(SandboxMalformedFrameError):
             await future
         assert session.ws is None
 

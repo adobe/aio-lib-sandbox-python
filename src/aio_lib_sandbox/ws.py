@@ -23,6 +23,7 @@ from .errors import (
     ProtocolVersionMismatchError,
     SandboxClientError,
     SandboxCommandNotFoundError,
+    SandboxMalformedFrameError,
     SandboxTimeoutError,
     SandboxUnauthorizedError,
     SandboxWebSocketError,
@@ -303,6 +304,8 @@ class WsSession:
                 error = ProtocolVersionMismatchError(
                     f"Sandbox '{self.id}' WebSocket protocol version does not match this SDK"
                 )
+            elif close_code == 4004:
+                error = SandboxMalformedFrameError(f"Sandbox '{self.id}' rejected a malformed WebSocket frame")
             else:
                 error = SandboxWebSocketError(f"Sandbox '{self.id}' WebSocket closed with code {close_code}")
             self.reject_all(error)

@@ -14,6 +14,7 @@ from .errors import (
     SandboxCommandNotFoundError,
     SandboxInitializationError,
     SandboxInvalidPortError,
+    SandboxMalformedFrameError,
     SandboxNotFoundError,
     SandboxPortNotProvisionedError,
     SandboxSDKError,
@@ -59,6 +60,7 @@ __all__ = [
     "SandboxWebSocketError",
     "SandboxCommandNotFoundError",
     "ProtocolVersionMismatchError",
+    "SandboxMalformedFrameError",
 ]
 
 SANDBOX_PROTOCOL_VERSION = PROTOCOL_VERSION

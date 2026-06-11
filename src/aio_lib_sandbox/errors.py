@@ -48,3 +48,7 @@ class SandboxInvalidPortError(SandboxClientError):
 
 class ProtocolVersionMismatchError(SandboxClientError):
     """Sandbox protocol major is incompatible with this SDK."""
+
+
+class SandboxMalformedFrameError(SandboxClientError):
+    """Sandbox rejected a WebSocket command frame as malformed JSON."""
