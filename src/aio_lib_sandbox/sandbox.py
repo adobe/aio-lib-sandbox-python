@@ -55,6 +55,7 @@ class Sandbox:
         status: str,
         cluster: str | None = None,
         region: str | None = None,
+        idle_timeout: int = 900,
         max_lifetime: int = 3600,
         namespace: str,
         api_host: str,
@@ -70,6 +71,7 @@ class Sandbox:
         self.status = status
         self.cluster = cluster
         self.region = region
+        self.idle_timeout = idle_timeout
         self.max_lifetime = max_lifetime
 
         self.namespace = namespace
@@ -97,6 +99,7 @@ class Sandbox:
         auth: str | None = None,
         type: str = "cpu:default",
         size: str | dict[str, Any] | None = None,
+        idle_timeout: int = 900,
         max_lifetime: int = 3600,
         ports: list[int] | None = None,
         envs: dict[str, str] | None = None,
@@ -123,7 +126,10 @@ class Sandbox:
             auth: Runtime API key (overrides ``__OW_API_KEY``).
             type: Sandbox type (default: ``'cpu:default'``).
             size: Size tier name or spec dict.
-            max_lifetime: Maximum lifetime in seconds.
+            idle_timeout: Seconds of inactivity before the sandbox is terminated
+                (default: 900, max: 10800). The idle timer resets on every
+                WebSocket message or status-check request.
+            max_lifetime: Maximum lifetime in seconds (default: 3600, max: 10800).
             ports: TCP ports to expose via preview URLs (default: ``[]``).
             envs: Environment variables to inject into the sandbox.
             policy: Network policy (e.g. egress allowlist).
@@ -141,6 +147,7 @@ class Sandbox:
             "name": name,
             "size": normalize_size(size),
             "type": type,
+            "idleTimeout": idle_timeout,
             "maxLifetime": max_lifetime,
         }
         if cluster is not None:
@@ -174,6 +181,7 @@ class Sandbox:
             status=payload.get("status", ""),
             cluster=payload.get("cluster"),
             region=payload.get("region"),
+            idle_timeout=payload.get("idleTimeout", 900),
             max_lifetime=payload.get("maxLifetime", 3600),
             preview_urls=_parse_preview_urls(payload.get("previewUrls")),
             management_endpoint=payload.get("managementEndpoint"),
@@ -196,17 +204,23 @@ class Sandbox:
         api_host: str | None = None,
         namespace: str | None = None,
         auth: str | None = None,
+        management_endpoint: str | None = None,
         verify_ssl: bool = True,
     ) -> "Sandbox":
         """Fetch the current status of an existing sandbox.
 
         Credentials are read from the environment automatically.
 
+        Pass the management endpoint so the request is sent to the correct host;
+        falls back to ``api_host`` when omitted.
+
         Args:
             sandbox_id: ID of the sandbox to look up.
             api_host: Runtime API host override.
             namespace: Runtime namespace override.
             auth: Runtime API key override.
+            management_endpoint: Per-sandbox management endpoint returned by
+                :meth:`create`. Falls back to ``api_host`` otherwise.
             verify_ssl: Whether to verify TLS certificates.
 
         Returns:
@@ -214,7 +228,8 @@ class Sandbox:
             This instance is **not** WebSocket-connected.
         """
         creds = cls.resolve_credentials(api_host=api_host, namespace=namespace, auth=auth)
-        url = f"{creds['api_host']}{API_PREFIX}/namespaces/{creds['namespace']}/sandboxes/{sandbox_id}"
+        base = management_endpoint or creds["api_host"]
+        url = f"{base}{API_PREFIX}/namespaces/{creds['namespace']}/sandboxes/{sandbox_id}"
         payload = await api_request(
             "GET",
             url,
@@ -229,7 +244,9 @@ class Sandbox:
             status=payload.get("status", ""),
             cluster=payload.get("cluster"),
             region=payload.get("region"),
+            idle_timeout=payload.get("idleTimeout", 900),
             max_lifetime=payload.get("maxLifetime", 3600),
+            management_endpoint=payload.get("managementEndpoint") or management_endpoint,
             preview_urls=_parse_preview_urls(payload.get("previewUrls")),
             protocol_version=payload.get("protocolVersion") or PROTOCOL_VERSION,
             namespace=creds["namespace"],
