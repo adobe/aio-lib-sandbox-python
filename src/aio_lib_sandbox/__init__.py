@@ -7,11 +7,14 @@ from __future__ import annotations
 
 __version__ = "0.1.0a8"
 
+from .constants import PROTOCOL_VERSION
 from .errors import (
+    ProtocolVersionMismatchError,
     SandboxClientError,
     SandboxCommandNotFoundError,
     SandboxInitializationError,
     SandboxInvalidPortError,
+    SandboxMalformedFrameError,
     SandboxNotFoundError,
     SandboxPortNotProvisionedError,
     SandboxSDKError,
@@ -35,6 +38,7 @@ from .types import (
 
 __all__ = [
     "Sandbox",
+    "SANDBOX_PROTOCOL_VERSION",
     "DetachedCommandHandle",
     "ExecResult",
     "ExecTask",
@@ -55,4 +59,8 @@ __all__ = [
     "SandboxTimeoutError",
     "SandboxWebSocketError",
     "SandboxCommandNotFoundError",
+    "ProtocolVersionMismatchError",
+    "SandboxMalformedFrameError",
 ]
+
+SANDBOX_PROTOCOL_VERSION = PROTOCOL_VERSION

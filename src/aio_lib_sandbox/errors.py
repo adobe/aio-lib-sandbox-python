@@ -44,3 +44,11 @@ class SandboxPortNotProvisionedError(SandboxClientError):
 
 class SandboxInvalidPortError(SandboxClientError):
     """Port value is not a valid integer in the range 1–65535."""
+
+
+class ProtocolVersionMismatchError(SandboxClientError):
+    """Sandbox protocol major is incompatible with this SDK."""
+
+
+class SandboxMalformedFrameError(SandboxClientError):
+    """Sandbox rejected a WebSocket command frame as malformed JSON."""
