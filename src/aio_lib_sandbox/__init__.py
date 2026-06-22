@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0a8"
+__version__ = "0.1.0a9"
 
 from .constants import PROTOCOL_VERSION
 from .errors import (
