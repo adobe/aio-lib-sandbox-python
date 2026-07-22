@@ -5,14 +5,10 @@
 ![Python CI](https://github.com/adobe/aio-lib-sandbox-python/workflows/Python%20CI/badge.svg)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Codecov Coverage](https://img.shields.io/codecov/c/github/adobe/aio-lib-sandbox-python/main.svg?style=flat-square)](https://codecov.io/gh/adobe/aio-lib-sandbox-python/)
-![Status](https://img.shields.io/badge/status-alpha-orange.svg)
 
 Python SDK for Adobe Runtime Sandboxes.
 
 A **sandbox** is an ephemeral, isolated compute environment. You create one, run commands and read/write files inside it over a WebSocket session, then destroy it.
-
-> [!WARNING]
-> **Alpha.** This SDK is in active alpha development. The API surface and authentication model may change without notice. Pin exact versions; install only with `--pre`.
 
 ## Pre-requisites
 
@@ -21,7 +17,7 @@ To use this library, you must have Sandboxes enabled for your Runtime namespace.
 ## Install
 
 ```bash
-pip install --pre aio-lib-sandbox
+pip install aio-lib-sandbox
 ```
 
 ## Quickstart
