@@ -38,7 +38,7 @@ pip install hatch
    Or set a specific version directly:
 
    ```bash
-   hatch version 1.0.0
+   hatch version 0.1.0a10
    ```
 
    > This edits `src/aio_lib_sandbox/__init__.py` in place because `pyproject.toml` uses Hatch's dynamic version path. Verify the new version with `hatch version`.
