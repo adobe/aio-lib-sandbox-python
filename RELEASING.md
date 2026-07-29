@@ -38,7 +38,7 @@ pip install hatch
    Or set a specific version directly:
 
    ```bash
-   hatch version 0.1.0a1
+   hatch version 0.1.0a10
    ```
 
    > This edits `src/aio_lib_sandbox/__init__.py` in place because `pyproject.toml` uses Hatch's dynamic version path. Verify the new version with `hatch version`.
@@ -77,11 +77,7 @@ pip install hatch
    And confirm the new version is installable:
 
    ```bash
-   pip install --pre aio-lib-sandbox==<new-version>
+   pip install aio-lib-sandbox==<new-version>
    ```
 
 8. **Create a GitHub Release** from the new tag on the [Releases page](https://github.com/adobe/aio-lib-sandbox-python/releases). Summarise what changed in the release notes.
-
-## Notes
-
-- This package is in **alpha**. All versions use a PEP 440 pre-release suffix (e.g. `0.1.0a0`). This means `pip install aio-lib-sandbox` will not pick up the package by default — users must pass `--pre`. Keep the `a0` / `a1` suffix until the API is stable.
